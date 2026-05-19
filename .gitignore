@@ -1,0 +1,4 @@
+charon-binance.sqlite
+node_modules/
+.env
+*.log
