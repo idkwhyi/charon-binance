@@ -1,72 +1,83 @@
 /**
  * Extreme Order Block (OB) Detection
  *
- * An Extreme Order Block is the last bearish candle before a strong bullish impulse (for LONG),
- * or the last bullish candle before a strong bearish impulse (for SHORT).
+ * An Order Block is the last opposing candle before a strong impulse move.
  *
- * "Extreme" qualifier: the impulse move must break a prior swing high/low (market structure break),
- * AND the OB candle must have above-average volume.
+ * LONG OB:  last bearish candle before a strong bullish impulse
+ * SHORT OB: last bullish candle before a strong bearish impulse
  *
- * OB Zone:
- *   LONG OB: high and low of the last bearish candle before the bullish impulse
- *   SHORT OB: high and low of the last bullish candle before the bearish impulse
+ * "Extreme" qualifier:
+ *   - Impulse candle body >= impulseMinPct
+ *   - OB candle volume >= volumeMultiplier × average volume (above-average participation)
  *
- * Entry logic:
- *   Price returns to OB zone AND is near 79% Fibonacci retracement → entry signal
+ * Validity rules:
+ *   - OB is VALID as long as price has NOT fully closed THROUGH the OB zone
+ *     (closing below OB low for LONG, closing above OB high for SHORT)
+ *   - OB is still valid even if price has traded inside the zone (that's the entry!)
+ *   - We look for the most recent OB that price is currently approaching or inside
  */
 
 /**
- * Detect Extreme Order Blocks in a kline array.
+ * Detect all Order Blocks in a kline array.
  *
- * @param {Array} klines - sorted oldest first
- * @param {number} impulseMinPct - minimum % move to qualify as impulse (default 0.8%)
- * @param {number} lookback - how many candles back to search for OBs
- * @param {number} volumeMultiplier - OB candle volume must be >= N × avg volume
- * @returns {Array<{ direction: 'LONG'|'SHORT', obHigh: number, obLow: number, obIndex: number, impulseSize: number, time: number }>}
+ * @param {Array}  klines           - sorted oldest first
+ * @param {number} impulseMinPct    - min body % of impulse candle (default 0.5%)
+ * @param {number} lookback         - candles to look back (default 40)
+ * @param {number} volumeMultiplier - OB candle volume >= N × avg (default 1.0, relaxed)
  */
-export function detectOrderBlocks(klines, impulseMinPct = 0.8, lookback = 30, volumeMultiplier = 1.2) {
+export function detectOrderBlocks(klines, impulseMinPct = 0.5, lookback = 40, volumeMultiplier = 1.0) {
   const orderBlocks = [];
   const start = Math.max(2, klines.length - lookback);
 
-  // Average volume for the lookback window
-  const avgVol = klines.slice(start, klines.length - 1)
-    .reduce((s, k) => s + k.volume, 0) / Math.max(1, klines.length - start - 1);
+  // Average volume over the lookback window
+  const window = klines.slice(start, klines.length - 1);
+  const avgVol = window.reduce((s, k) => s + k.volume, 0) / Math.max(1, window.length);
 
   for (let i = start; i < klines.length - 1; i++) {
-    const candle = klines[i];
-    const next   = klines[i + 1];
+    const ob   = klines[i];
+    const next = klines[i + 1];
 
-    const isBearishCandle = candle.close < candle.open;
-    const isBullishCandle = candle.close > candle.open;
+    const obBody   = Math.abs(ob.close - ob.open);
+    const nextBody = Math.abs(next.close - next.open);
+    const nextBodyPct = next.open > 0 ? (nextBody / next.open) * 100 : 0;
 
-    // LONG OB: bearish candle followed by strong bullish impulse
-    if (isBearishCandle) {
-      const impulse = (next.close - next.open) / next.open * 100;
-      if (impulse >= impulseMinPct && candle.volume >= avgVol * volumeMultiplier) {
+    const isBearish = ob.close < ob.open;
+    const isBullish = ob.close > ob.open;
+
+    // LONG OB: bearish candle → strong bullish impulse next
+    if (isBearish && next.close > next.open) {
+      if (nextBodyPct >= impulseMinPct && ob.volume >= avgVol * volumeMultiplier) {
         orderBlocks.push({
-          direction: 'LONG',
-          obHigh: candle.high,
-          obLow:  candle.low,
-          obMid:  (candle.high + candle.low) / 2,
-          obIndex: i,
-          impulseSize: impulse,
-          time: candle.openTime,
+          direction:   'LONG',
+          obHigh:      ob.high,
+          obLow:       ob.low,
+          obOpen:      ob.open,
+          obClose:     ob.close,
+          obMid:       (ob.high + ob.low) / 2,
+          obIndex:     i,
+          impulseSize: nextBodyPct,
+          volume:      ob.volume,
+          avgVol,
+          time:        ob.openTime,
         });
       }
     }
 
-    // SHORT OB: bullish candle followed by strong bearish impulse
-    if (isBullishCandle) {
-      const impulse = (next.open - next.close) / next.open * 100;
-      if (impulse >= impulseMinPct && candle.volume >= avgVol * volumeMultiplier) {
+    // SHORT OB: bullish candle → strong bearish impulse next
+    if (isBullish && next.close < next.open) {
+      if (nextBodyPct >= impulseMinPct && ob.volume >= avgVol * volumeMultiplier) {
         orderBlocks.push({
-          direction: 'SHORT',
-          obHigh: candle.high,
-          obLow:  candle.low,
-          obMid:  (candle.high + candle.low) / 2,
-          obIndex: i,
-          impulseSize: impulse,
-          time: candle.openTime,
+          direction:   'SHORT',
+          obHigh:      ob.high,
+          obLow:       ob.low,
+          obOpen:      ob.open,
+          obClose:     ob.close,
+          obMid:       (ob.high + ob.low) / 2,
+          obIndex:     i,
+          impulseSize: nextBodyPct,
+          volume:      ob.volume,
+          avgVol,
+          time:        ob.openTime,
         });
       }
     }
@@ -76,42 +87,60 @@ export function detectOrderBlocks(klines, impulseMinPct = 0.8, lookback = 30, vo
 }
 
 /**
- * Check if current price is inside or touching an Order Block zone.
+ * Check if current price is inside or near an Order Block zone.
  *
  * @param {number} currentPrice
- * @param {{ obHigh: number, obLow: number, direction: string }} ob
- * @param {number} tolerance - % buffer (default 0.3%)
- * @returns {boolean}
+ * @param {object} ob
+ * @param {number} tolerance - extra buffer as fraction of OB range (default 0.5)
  */
-export function isPriceInOrderBlock(currentPrice, ob, tolerance = 0.003) {
-  const buffer = (ob.obHigh - ob.obLow) * tolerance;
+export function isPriceInOrderBlock(currentPrice, ob, tolerance = 0.5) {
+  const range  = ob.obHigh - ob.obLow;
+  const buffer = range * tolerance;
   return currentPrice >= (ob.obLow - buffer) && currentPrice <= (ob.obHigh + buffer);
 }
 
 /**
- * Find the most recent valid Extreme Order Block that:
- * 1. Matches the given direction
- * 2. Has NOT been fully violated (price hasn't closed through the OB)
- * 3. Is the closest OB to current price
+ * Find the most relevant Order Block for the given direction.
  *
- * @param {Array} klines
+ * Rules:
+ * 1. Must match direction
+ * 2. Must NOT be fully violated:
+ *    - LONG OB violated = any subsequent candle CLOSED below OB low
+ *    - SHORT OB violated = any subsequent candle CLOSED above OB high
+ * 3. Price must be AT or BELOW the OB zone (approaching from above for LONG retrace)
+ *    or AT or ABOVE the OB zone (approaching from below for SHORT retrace)
+ * 4. Among valid OBs, return the most recent one (closest to current price action)
+ *
+ * @param {Array}  klines
  * @param {'LONG'|'SHORT'} direction
  * @param {number} currentPrice
- * @returns {object|null}
  */
 export function findRelevantOrderBlock(klines, direction, currentPrice) {
-  const obs = detectOrderBlocks(klines).filter(ob => ob.direction === direction);
-  if (!obs.length) return null;
+  const allOBs = detectOrderBlocks(klines).filter(ob => ob.direction === direction);
 
-  // Filter out OBs that have been violated (price closed beyond OB)
-  const valid = obs.filter(ob => {
-    const subsequentKlines = klines.slice(ob.obIndex + 1);
+  if (!allOBs.length) return null;
+
+  const valid = allOBs.filter(ob => {
+    const subsequent = klines.slice(ob.obIndex + 2); // skip the impulse candle itself
+
     if (direction === 'LONG') {
-      // OB violated if any subsequent candle closed below OB low
-      return !subsequentKlines.some(k => k.close < ob.obLow);
+      // Violated if any candle CLOSED below OB low (structure broken)
+      const violated = subsequent.some(k => k.close < ob.obLow);
+      if (violated) return false;
+
+      // Price must be at or below OB high (retracing into zone)
+      // Allow price to be up to 2× OB range above OB high (approaching)
+      const range = ob.obHigh - ob.obLow;
+      return currentPrice <= ob.obHigh + range * 2;
+
     } else {
-      // OB violated if any subsequent candle closed above OB high
-      return !subsequentKlines.some(k => k.close > ob.obHigh);
+      // Violated if any candle CLOSED above OB high (structure broken)
+      const violated = subsequent.some(k => k.close > ob.obHigh);
+      if (violated) return false;
+
+      // Price must be at or above OB low (retracing into zone)
+      const range = ob.obHigh - ob.obLow;
+      return currentPrice >= ob.obLow - range * 2;
     }
   });
 

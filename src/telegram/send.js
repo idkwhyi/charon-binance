@@ -77,3 +77,45 @@ export async function sendTradeIntent(intentId, candidate, decision) {
     },
   });
 }
+
+/**
+ * Send a "watch alert" for a near-miss OB setup.
+ * Price is not yet in the entry zone but setup is valid — user should monitor.
+ */
+export async function sendWatchAlert(symbol, direction, meta) {
+  const dir   = direction;
+  const emoji = dir === 'LONG' ? '👀🟢' : '👀🔴';
+  const lines = [
+    `${emoji} <b>Watch Alert — ${escapeHtml(symbol)}</b>`,
+    `Direction: <b>${dir}</b> | Trend: <b>${meta.trend}</b>`,
+    ``,
+    `📊 <b>Market Structure</b>`,
+  ];
+
+  if (meta.trend === 'UPTREND') {
+    lines.push(`HH: <b>${fmtUsd(meta.lastHH)}</b> | HL: <b>${fmtUsd(meta.lastHL)}</b>`);
+  } else {
+    lines.push(`LH: <b>${fmtUsd(meta.lastLH)}</b> | LL: <b>${fmtUsd(meta.lastLL)}</b>`);
+  }
+
+  lines.push(``);
+  lines.push(`🟦 <b>Order Block Zone</b>`);
+  lines.push(`OB: <b>${fmtUsd(meta.obLow)}</b> – <b>${fmtUsd(meta.obHigh)}</b>`);
+  lines.push(`Impulse: <b>${Number(meta.obImpulseSize || 0).toFixed(2)}%</b>`);
+
+  lines.push(``);
+  lines.push(`📐 <b>Entry Zone (Fib 70.5–78.6%)</b>`);
+  lines.push(`70.5%: <b>${fmtUsd(meta.fib705Price)}</b> | 78.6%: <b>${fmtUsd(meta.fib79Price)}</b>`);
+  lines.push(`Current: <b>${fmtUsd(meta.entry)}</b>`);
+
+  lines.push(``);
+  lines.push(`🎯 <b>Projected Trade Levels</b>`);
+  lines.push(`Entry zone: <b>${fmtUsd(meta.fib79Price)}</b> – <b>${fmtUsd(meta.fib705Price)}</b>`);
+  lines.push(`SL: <b>${fmtUsd(meta.stopLoss)}</b> <i>(below ${escapeHtml(meta.slAnchorLabel)}: ${fmtUsd(meta.slAnchorPrice)})</i>`);
+  lines.push(`TP: <b>${fmtUsd(meta.takeProfit)}</b>`);
+  lines.push(`R:R: <b>1:${Number(meta.rrRatio || 0).toFixed(2)}</b>`);
+  lines.push(``);
+  lines.push(`⏳ <i>Waiting for price to reach entry zone</i>`);
+
+  await send(lines.join('\n'));
+}

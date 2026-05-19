@@ -72,10 +72,35 @@ export async function processSignalCandidate(rawSignal) {
   storeDecision(candidateId, candidate, batchDecision);
   updateCandidateStatus(candidateId, isBuy ? 'buy' : batchDecision.verdict.toLowerCase());
 
+  // Notify Telegram when LLM passes/watches a valid candidate
+  if (!isBuy && strat.use_llm) {
+    const meta = candidate.signals?.meta || {};
+    const isOB = candidate.signalType === 'extreme_ob';
+    const lines = [
+      `🔍 <b>Candidate Reviewed — ${escapeHtml(candidate.symbol)}</b>`,
+      `Verdict: <b>${batchDecision.verdict}</b> | Confidence: <b>${batchDecision.confidence}%</b>`,
+      `Signal: <code>${candidate.signalType}</code> | Direction: <b>${candidate.direction}</b>`,
+    ];
+    if (isOB && meta.rrRatio) {
+      lines.push(`R:R: <b>1:${meta.rrRatio}</b> | Entry: <b>${meta.entry}</b>`);
+      lines.push(`SL: <b>${meta.stopLoss}</b> | TP: <b>${meta.takeProfit}</b>`);
+    }
+    if (batchDecision.reason) lines.push(`Reason: <i>${escapeHtml(batchDecision.reason)}</i>`);
+    await sendTelegram(lines.join('\n'));
+  }
+
   if (isBuy && selectedRow && boolSetting('agent_enabled', 'true') !== false) {
     const minConf = numSetting('llm_min_confidence', strat.llm_min_confidence ?? 70);
     if (batchDecision.confidence < minConf) {
       console.log(`[agent] confidence ${batchDecision.confidence} < threshold ${minConf}, skipping`);
+      const meta = candidate.signals?.meta || {};
+      await sendTelegram([
+        `⚠️ <b>Signal skipped — low confidence</b>`,
+        `${escapeHtml(candidate.symbol)} ${candidate.direction} via <code>${candidate.signalType}</code>`,
+        `Confidence: <b>${batchDecision.confidence}%</b> < min <b>${minConf}%</b>`,
+        meta.rrRatio ? `R:R: <b>1:${meta.rrRatio}</b>` : null,
+        batchDecision.reason ? `Reason: <i>${escapeHtml(batchDecision.reason)}</i>` : null,
+      ].filter(Boolean).join('\n'));
       return;
     }
     await handleApprovedBuy(selectedRow, batchDecision, batchId, candidateId);

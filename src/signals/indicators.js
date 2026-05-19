@@ -86,12 +86,13 @@ export function detectFundingExtreme(fundingRate, longThreshold = 0.001, shortTh
 
 /**
  * Run all indicator checks and return triggered signals.
- * @param {Array} klines - primary timeframe klines (5m)
+ * All indicators run on 15m klines.
+ *
+ * @param {Array} klines - 15m klines, sorted oldest first
  * @param {number|null} fundingRate
  * @param {object} stratConfig
- * @param {Array} [klines15m] - 15m klines for market structure (used by extreme_ob)
  */
-export function runIndicators(klines, fundingRate, stratConfig, klines15m = null) {
+export function runIndicators(klines, fundingRate, stratConfig) {
   const signals = [];
 
   const volSpike = detectVolumeSpike(klines, stratConfig.min_volume_spike_ratio || 3);
@@ -116,9 +117,9 @@ export function runIndicators(klines, fundingRate, stratConfig, klines15m = null
     }
   }
 
-  // Extreme Order Block: requires both 5m and 15m klines
-  if (klines15m && klines15m.length >= 20) {
-    const obSignals = detectExtremeOB(klines, klines15m, fundingRate);
+  // Extreme Order Block: market structure + OB detection, all on 15m
+  if (klines && klines.length >= 20) {
+    const obSignals = detectExtremeOB(klines, fundingRate);
     signals.push(...obSignals);
   }
 

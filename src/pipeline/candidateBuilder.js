@@ -15,8 +15,8 @@ export function buildCandidate(signal) {
   const lowPrice = Number(ticker.lowPrice || markPrice);
   const openInterestUsdt = signal.openInterest ? signal.openInterest * markPrice : null;
 
-  const klines5m = signal.klines5m || [];
-  const lastKline = klines5m[klines5m.length - 1] || {};
+  const klines15m = signal.klines15m || [];
+  const lastKline = klines15m[klines15m.length - 1] || {};
 
   // For extreme_ob signals, use OB-derived TP/SL if available
   const obMeta = signal.signalType === 'extreme_ob' ? (signal.signalMeta || {}) : {};
@@ -58,7 +58,6 @@ export function buildCandidate(signal) {
       detectedAt: signal.detectedAt || now(),
     },
     klineSnapshot: {
-      last5: (signal.klines5m || []).slice(-5),
       last5_15m: (signal.klines15m || []).slice(-5),
     },
     createdAtMs: now(),
@@ -104,8 +103,8 @@ export function filterCandidate(candidate) {
   // Extreme OB: require minimum R:R ratio of 1:2
   if (candidate.signalType === 'extreme_ob') {
     const rr = candidate.obRR;
-    if (rr !== null && rr < 2.0) {
-      failures.push(`extreme_ob R:R ${rr?.toFixed(2)} < minimum 2.0 (1:2)`);
+    if (rr !== null && rr < 1.8) {
+      failures.push(`extreme_ob R:R ${rr?.toFixed(2)} < minimum 1.8`);
     }
     if (!candidate.signals?.meta?.trend || candidate.signals.meta.trend === 'RANGING') {
       failures.push('extreme_ob requires trending market structure (not RANGING)');

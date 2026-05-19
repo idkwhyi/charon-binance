@@ -53,7 +53,7 @@ export function calcFibLevels(swingLow, swingHigh, direction) {
  * @param {number} tolerance - extra % buffer around zone (default 0.5%)
  * @returns {{ inZone: boolean, fib79Price: number, entryZoneLow: number, entryZoneHigh: number, levels: object }}
  */
-export function isPriceInFibZone(currentPrice, swingLow, swingHigh, direction, tolerance = 0.005) {
+export function isPriceInFibZone(currentPrice, swingLow, swingHigh, direction, tolerance = 0.02) {
   const { levels, entryZoneLow, entryZoneHigh } = calcFibLevels(swingLow, swingHigh, direction);
 
   const buffer = (swingHigh - swingLow) * tolerance;
