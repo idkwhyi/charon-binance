@@ -114,15 +114,28 @@ export async function executeFuturesBuy(candidate, decision) {
 
   console.log(`[executor] ${symbol} ${direction} ${quantity} @ ${fillPrice} (order ${orderId})`);
 
-  // Calculate TP and SL prices
-  const tpPct = Math.abs(decision.suggested_tp_percent) / 100;
-  const slPct = Math.abs(decision.suggested_sl_percent) / 100;
-  const tpPrice = direction === 'LONG'
-    ? parseFloat((fillPrice * (1 + tpPct)).toFixed(pricePrecision))
-    : parseFloat((fillPrice * (1 - tpPct)).toFixed(pricePrecision));
-  const slPrice = direction === 'LONG'
-    ? parseFloat((fillPrice * (1 - slPct)).toFixed(pricePrecision))
-    : parseFloat((fillPrice * (1 + slPct)).toFixed(pricePrecision));
+  // Use absolute SL/TP prices from OB meta if available (structure-based placement)
+  // Otherwise fall back to percentage-based calculation
+  let tpPrice, slPrice;
+
+  const obMeta = candidate.signals?.meta || {};
+  if (obMeta.stopLoss && obMeta.takeProfit) {
+    // Structure-based: SL below Higher Low, TP at swing high/low
+    slPrice = parseFloat(Number(obMeta.stopLoss).toFixed(pricePrecision));
+    tpPrice = parseFloat(Number(obMeta.takeProfit).toFixed(pricePrecision));
+    console.log(`[executor] Using structure-based SL=${slPrice} TP=${tpPrice} (from OB meta)`);
+  } else {
+    // Fallback: percentage-based
+    const tpPct = Math.abs(decision.suggested_tp_percent) / 100;
+    const slPct = Math.abs(decision.suggested_sl_percent) / 100;
+    tpPrice = direction === 'LONG'
+      ? parseFloat((fillPrice * (1 + tpPct)).toFixed(pricePrecision))
+      : parseFloat((fillPrice * (1 - tpPct)).toFixed(pricePrecision));
+    slPrice = direction === 'LONG'
+      ? parseFloat((fillPrice * (1 - slPct)).toFixed(pricePrecision))
+      : parseFloat((fillPrice * (1 + slPct)).toFixed(pricePrecision));
+    console.log(`[executor] Using pct-based SL=${slPrice} TP=${tpPrice}`);
+  }
 
   // Rough liquidation estimate (isolated margin, no funding)
   const liqPrice = direction === 'LONG'

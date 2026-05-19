@@ -172,26 +172,29 @@ export function detectExtremeOB(klines15m, fundingRate = null) {
     fundingRate,
   };
 
-  // ── Near-miss: valid setup but price not yet in zone ─────────────────────
-  // Emit watch signal so Telegram can alert user to monitor this pair
-  if (!inFibZone && !inOBZone) {
-    // Only emit watch if R:R is already good (setup is valid, just waiting for price)
+  // ── Near-miss: valid setup but price not yet in OB zone ──────────────────
+  // Entry ONLY when price is inside the Order Block zone.
+  // Being in fib zone alone is not enough — we need price to retrace INTO the OB.
+  if (!inOBZone) {
     if (rrRatio >= MIN_RR) {
-      console.log(`[ob] watch ${sym}: valid setup, price approaching zone (fib79=${fibResult.fib79Price?.toFixed(4)}, OB=${ob.obLow?.toFixed(4)}-${ob.obHigh?.toFixed(4)})`);
+      const distToOB = direction === 'LONG'
+        ? ((ob.obHigh - entry) / entry * 100).toFixed(2)
+        : ((entry - ob.obLow) / entry * 100).toFixed(2);
+      console.log(`[ob] watch ${sym}: waiting for retrace to OB (${ob.obLow?.toFixed(6)}-${ob.obHigh?.toFixed(6)}, dist=${distToOB}%)`);
       signals.push({ type: SIGNAL_TYPE_WATCH, direction, meta: { ...meta, isWatch: true } });
     } else {
-      console.log(`[ob] skip ${sym}: price not in fib zone (79%=${fibResult.fib79Price?.toFixed(4)}) nor OB zone (${ob.obLow?.toFixed(4)}-${ob.obHigh?.toFixed(4)})`);
+      console.log(`[ob] skip ${sym}: not in OB zone and R:R ${rrRatio.toFixed(2)} < ${MIN_RR}`);
     }
     return signals;
   }
 
-  // ── Full signal: price in zone + R:R valid ────────────────────────────────
+  // ── Full signal: price inside OB zone + R:R valid ─────────────────────────
   if (rrRatio < MIN_RR) {
     console.log(`[ob] skip ${sym}: R:R ${rrRatio.toFixed(2)} < ${MIN_RR} | entry=${entry.toFixed(6)} sl=${stopLoss.toFixed(6)} tp=${takeProfit.toFixed(6)}`);
     return signals;
   }
 
-  console.log(`[ob] SIGNAL ${sym}: ${direction} R:R=${rrRatio.toFixed(2)} entry=${entry} sl=${stopLoss} tp=${takeProfit}`);
+  console.log(`[ob] SIGNAL ${sym}: ${direction} R:R=${rrRatio.toFixed(2)} entry=${entry} sl=${stopLoss} tp=${takeProfit} (IN OB ZONE)`);
   signals.push({ type: SIGNAL_TYPE, direction, meta });
 
   return signals;

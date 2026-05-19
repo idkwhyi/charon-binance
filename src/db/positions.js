@@ -18,7 +18,49 @@ export function canOpenMorePositions(maxPositions = 3) {
   return openPositionCount() < maxPositions;
 }
 
+/**
+ * Calculate raw price % from entry to SL/TP for storage in DB.
+ *
+ * Convention (used by positions.js for exit checks):
+ *   LONG:  tpPercent > 0 (price goes up),  slPercent < 0 (price goes down)
+ *   SHORT: tpPercent > 0 (price goes down), slPercent < 0 (price goes up past SL)
+ *
+ * For SHORT, pricePct = (1 - markPrice/entryPrice) * 100
+ *   → positive when price drops (profit), negative when price rises (loss)
+ *   → SL triggers when pricePct <= slPercent (negative threshold)
+ *   → So slPercent for SHORT = (1 - stopLoss/entry) * 100  → negative because stopLoss > entry
+ */
+function calcTpSlPercent(direction, entryPrice, stopLoss, takeProfit) {
+  if (direction === 'LONG') {
+    // LONG: profit when price rises
+    const tpPercent = (takeProfit - entryPrice) / entryPrice * 100;  // positive
+    const slPercent = (stopLoss - entryPrice) / entryPrice * 100;    // negative (SL < entry)
+    return { tpPercent, slPercent };
+  } else {
+    // SHORT: profit when price falls
+    // positions.js uses: pricePct = (1 - markPrice/entryPrice) * 100
+    // TP: price falls to takeProfit → pricePct = (1 - takeProfit/entry) * 100 → positive
+    // SL: price rises to stopLoss  → pricePct = (1 - stopLoss/entry) * 100   → negative
+    const tpPercent = (1 - takeProfit / entryPrice) * 100;  // positive (takeProfit < entry)
+    const slPercent = (1 - stopLoss / entryPrice) * 100;    // negative (stopLoss > entry)
+    return { tpPercent, slPercent };
+  }
+}
+
 export function createDryRunPosition(candidateId, candidate, decision) {
+  const entryPrice = candidate.metrics.markPrice;
+  const obMeta = candidate.signals?.meta || {};
+
+  let tpPercent, slPercent;
+  if (obMeta.stopLoss && obMeta.takeProfit && entryPrice > 0) {
+    ({ tpPercent, slPercent } = calcTpSlPercent(
+      decision.direction, entryPrice, obMeta.stopLoss, obMeta.takeProfit
+    ));
+  } else {
+    tpPercent = decision.suggested_tp_percent;
+    slPercent = decision.suggested_sl_percent;
+  }
+
   const result = db.prepare(`
     INSERT INTO positions (
       candidate_id, symbol, direction, leverage, margin_type,
@@ -28,28 +70,31 @@ export function createDryRunPosition(candidateId, candidate, decision) {
       status, execution_mode, opened_at_ms, strategy_id
     ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'open','dry_run',?,?)
   `).run(
-    candidateId,
-    candidate.symbol,
-    decision.direction,
-    candidate.leverage || 1,
-    candidate.marginType || 'ISOLATED',
-    candidate.metrics.markPrice,
-    candidate.entryUsdt,
-    candidate.metrics.markPrice * (candidate.entryUsdt / candidate.metrics.markPrice),
-    decision.suggested_tp_percent,
-    decision.suggested_sl_percent,
-    0,
-    0,
-    candidate.metrics.markPrice,
-    candidate.metrics.markPrice,
+    candidateId, candidate.symbol, decision.direction,
+    candidate.leverage || 1, candidate.marginType || 'ISOLATED',
+    entryPrice, candidate.entryUsdt, candidate.entryUsdt,
+    tpPercent, slPercent, 0, 0,
+    entryPrice, entryPrice,
     candidate.metrics.liqPrice || null,
-    now(),
-    candidate.strategyId,
+    now(), candidate.strategyId,
   );
   return result.lastInsertRowid;
 }
 
 export function createLivePosition(candidateId, candidate, decision, orderId) {
+  const entryPrice = candidate.metrics.markPrice;
+  const obMeta = candidate.signals?.meta || {};
+
+  let tpPercent, slPercent;
+  if (obMeta.stopLoss && obMeta.takeProfit && entryPrice > 0) {
+    ({ tpPercent, slPercent } = calcTpSlPercent(
+      decision.direction, entryPrice, obMeta.stopLoss, obMeta.takeProfit
+    ));
+  } else {
+    tpPercent = decision.suggested_tp_percent;
+    slPercent = decision.suggested_sl_percent;
+  }
+
   const result = db.prepare(`
     INSERT INTO positions (
       candidate_id, symbol, direction, leverage, margin_type,
@@ -59,24 +104,13 @@ export function createLivePosition(candidateId, candidate, decision, orderId) {
       status, execution_mode, binance_order_id, opened_at_ms, strategy_id
     ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'open','live',?,?,?)
   `).run(
-    candidateId,
-    candidate.symbol,
-    decision.direction,
-    candidate.leverage || 1,
-    candidate.marginType || 'ISOLATED',
-    candidate.metrics.markPrice,
-    candidate.entryUsdt,
-    candidate.metrics.markPrice * (candidate.entryUsdt / candidate.metrics.markPrice),
-    decision.suggested_tp_percent,
-    decision.suggested_sl_percent,
-    0,
-    0,
-    candidate.metrics.markPrice,
-    candidate.metrics.markPrice,
+    candidateId, candidate.symbol, decision.direction,
+    candidate.leverage || 1, candidate.marginType || 'ISOLATED',
+    entryPrice, candidate.entryUsdt, candidate.entryUsdt,
+    tpPercent, slPercent, 0, 0,
+    entryPrice, entryPrice,
     candidate.metrics.liqPrice || null,
-    orderId || null,
-    now(),
-    candidate.strategyId,
+    orderId || null, now(), candidate.strategyId,
   );
   return result.lastInsertRowid;
 }

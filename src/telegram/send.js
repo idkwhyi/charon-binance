@@ -39,13 +39,32 @@ export async function sendStartup(mode, watchlist) {
 export async function sendPositionOpen(positionId) {
   const row = db.prepare("SELECT * FROM positions WHERE id = ?").get(positionId);
   if (!row) return;
+
+  const entryPrice = Number(row.entry_price);
+  const tpPct = Number(row.tp_percent);
+  const slPct = Number(row.sl_percent);
+  const isLong = row.direction === 'LONG';
+
+  // Reconstruct absolute prices from stored raw %
+  // LONG:  tpPct > 0 (price up),  slPct < 0 (price down)
+  // SHORT: tpPct > 0 (price down), slPct < 0 (price up past SL)
+  //   pricePct for SHORT = (1 - mark/entry)*100
+  //   so tpPrice: (1 - tpPct/100) * entry, slPrice: (1 - slPct/100) * entry
+  const tpPrice = isLong
+    ? entryPrice * (1 + tpPct / 100)
+    : entryPrice * (1 - tpPct / 100);
+  const slPrice = isLong
+    ? entryPrice * (1 + slPct / 100)   // slPct negative → price below entry
+    : entryPrice * (1 - slPct / 100);  // slPct negative → (1 - neg) > 1 → price above entry
+
   await send([
     `✅ <b>Position Opened #${row.id}</b>`,
     `${dirEmoji(row.direction)} <b>${escapeHtml(row.symbol)}</b> ${row.direction} ${row.leverage}x`,
-    `Entry: <b>${fmtUsd(row.entry_price)}</b>`,
+    `Entry: <b>${fmtUsd(entryPrice)}</b>`,
     `Margin: <b>${fmtUsd(row.entry_usdt)}</b> USDT`,
     row.liq_price ? `Liq Price: <b>${fmtUsd(row.liq_price)}</b>` : null,
-    `TP: <b>${fmtPct(row.tp_percent)}</b> | SL: <b>${fmtPct(row.sl_percent)}</b>`,
+    `TP: <b>${fmtUsd(tpPrice)}</b> (${tpPct >= 0 ? '+' : ''}${tpPct.toFixed(2)}%)`,
+    `SL: <b>${fmtUsd(slPrice)}</b> (${slPct.toFixed(2)}%)`,
     `Mode: <code>${row.execution_mode}</code>`,
   ].filter(Boolean).join('\n'));
 }

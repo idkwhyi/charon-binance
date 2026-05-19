@@ -23,6 +23,16 @@ export function normalizeDecision(parsed, fallbackReason = '') {
   };
 }
 
+/**
+ * Strip <think>...</think> blocks that some reasoning models (e.g. qwen3) emit
+ * before the actual JSON response, then parse strict JSON.
+ */
+function parseThinkingModelResponse(content) {
+  // Remove <think>...</think> blocks (including multiline)
+  const stripped = content.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+  return strictJsonFromText(stripped);
+}
+
 export function activeLessonsForPrompt(limit = 6) {
   return db.prepare(`
     SELECT lesson FROM learning_lessons
@@ -64,16 +74,16 @@ export async function decideCandidateBatch(rows, triggerCandidateId) {
     };
   }
 
-  const system = [
+  const systemInstructions = [
     'You are Charon, a Binance USDM Futures trading analyst.',
     'Return strict JSON only. No markdown, no explanation outside JSON.',
-    'You will receive up to 10 recent market signal candidates.',
+    'You will receive up to 5 recent market signal candidates.',
     'Each candidate has a direction_hint (LONG or SHORT) from technical indicators.',
     'Pick at most ONE candidate to trade. Use verdict BUY_LONG for a long entry or BUY_SHORT for a short entry.',
     'Use WATCH if candidates are interesting but none is strong enough.',
     'Use PASS if the set is weak, contradictory, or high risk.',
     'Consider: signal type, funding rate (positive = crowded long = SHORT bias), open interest, 24h volume, leverage risk vs reward.',
-    'For extreme_ob signals: validate that market structure trend matches direction, OB zone is valid, and R:R >= 2.0 (minimum 1:2).',
+    'For extreme_ob signals: validate that market structure trend matches direction, OB zone is valid, and R:R >= 1.8.',
     'For extreme_ob signals: SL is placed below the Higher Low (LONG) or above the Lower High (SHORT) — respect this placement.',
     'For extreme_ob signals: use the pre-calculated suggested_tp_percent and suggested_sl_percent from the OB meta — do NOT override unless there is a strong reason.',
     'suggested_tp_percent: positive number (e.g. 2 for 2% from entry).',
@@ -83,6 +93,7 @@ export async function decideCandidateBatch(rows, triggerCandidateId) {
 
   const user = {
     task: 'Pick the best futures trade candidate, or choose none.',
+    instructions: systemInstructions,
     recent_lessons: activeLessonsForPrompt(),
     output_schema: {
       verdict: 'BUY_LONG | BUY_SHORT | WATCH | PASS',
@@ -102,9 +113,17 @@ export async function decideCandidateBatch(rows, triggerCandidateId) {
   try {
     const res = await axios.post(`${LLM_BASE_URL.replace(/\/$/, '')}/chat/completions`, {
       model: LLM_MODEL,
-      temperature: 0.2,
+      temperature: 0.6,
+      max_completion_tokens: 1024,
+      top_p: 0.95,
+      // For qwen3-32b on Groq: disable chain-of-thought to get clean JSON output
+      // reasoning_effort: "none" disables thinking tokens entirely
+      // reasoning_format: "hidden" ensures no <think> tags in output
+      ...(LLM_MODEL === 'qwen/qwen3-32b' ? {
+        reasoning_effort: 'none',
+        reasoning_format: 'hidden',
+      } : {}),
       messages: [
-        { role: 'system', content: system },
         { role: 'user', content: JSON.stringify(user) },
       ],
     }, {
@@ -113,7 +132,8 @@ export async function decideCandidateBatch(rows, triggerCandidateId) {
     });
 
     const content = res.data?.choices?.[0]?.message?.content || '';
-    const parsed = strictJsonFromText(content);
+    // Use thinking-model-aware parser to strip <think> blocks if present
+    const parsed = parseThinkingModelResponse(content);
     const decision = normalizeDecision(parsed);
 
     const selectedId = Number(parsed.selected_candidate_id);
@@ -128,18 +148,20 @@ export async function decideCandidateBatch(rows, triggerCandidateId) {
       selected_row: isBuy && row ? row : null,
     };
   } catch (err) {
-    console.log(`[llm] batch failed: ${err.message}`);
+    const errMsg = err.response?.data?.error?.message || err.response?.data?.message || err.message;
+    console.log(`[llm] batch failed: ${errMsg}`);
+    console.log(`[llm] status: ${err.response?.status} | data: ${JSON.stringify(err.response?.data || {})}`);
     return {
       verdict: 'WATCH',
       direction: null,
       confidence: 0,
       selected_candidate_id: null,
       selected_symbol: null,
-      reason: `LLM failed: ${err.message}`,
+      reason: `LLM failed: ${errMsg}`,
       risks: ['llm_error'],
       suggested_tp_percent: numSetting('default_tp_percent', 2),
       suggested_sl_percent: numSetting('default_sl_percent', -1.5),
-      raw: { error: err.message },
+      raw: { error: errMsg },
     };
   }
 }

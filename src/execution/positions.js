@@ -27,10 +27,13 @@ export async function refreshPosition(position, autoExit = true) {
   const entryPrice = Number(position.entry_price);
   if (!entryPrice || entryPrice <= 0) return null;
 
-  // P&L calculation (leveraged)
+  // P&L calculation — based on raw price movement, NOT leveraged
+  // Leverage only affects margin efficiency, not the SL/TP price levels
   const pricePct = isLong
     ? (markPrice / entryPrice - 1) * 100
     : (1 - markPrice / entryPrice) * 100;
+
+  // For display purposes, show leveraged PnL on the margin used
   const pnlPercent = pricePct * Number(position.leverage || 1);
   const pnlUsdt = Number(position.entry_usdt) * (pnlPercent / 100);
 
@@ -39,17 +42,18 @@ export async function refreshPosition(position, autoExit = true) {
   const lowWater = Math.min(Number(position.low_water_price || entryPrice), markPrice);
 
   // Trailing
-  const trailingArmed = position.trailing_armed || (position.trailing_enabled && pnlPercent >= Number(position.tp_percent));
+  const trailingArmed = position.trailing_armed || (position.trailing_enabled && pricePct >= Number(position.tp_percent));
   const trailRef = isLong ? highWater : lowWater;
   const trailDrop = isLong
-    ? (markPrice / trailRef - 1) * 100 * Number(position.leverage || 1)
-    : (trailRef / markPrice - 1) * 100 * Number(position.leverage || 1);
+    ? (markPrice / trailRef - 1) * 100
+    : (trailRef / markPrice - 1) * 100;
   const trailingHit = trailingArmed && position.trailing_enabled
     && trailDrop <= -Math.abs(Number(position.trailing_percent));
 
-  // Exit conditions
-  const tpHit = pnlPercent >= Number(position.tp_percent);
-  const slHit = pnlPercent <= Number(position.sl_percent);
+  // Exit conditions — compare raw price % (not leveraged) against tp/sl thresholds
+  // tp_percent and sl_percent stored in DB are raw price % from entry
+  const tpHit = pricePct >= Number(position.tp_percent);
+  const slHit = pricePct <= Number(position.sl_percent);
 
   // Max hold time
   const strat = strategyById(position.strategy_id);
