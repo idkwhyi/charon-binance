@@ -1,23 +1,31 @@
 /**
  * Extreme Order Block Signal Detector
  *
- * Multi-Timeframe Pipeline:
+ * Multi-Timeframe Pipeline with ICT Entry Confirmation:
  * 1. Detect Market Structure on 1H → determine trend direction (larger swings)
  * 2. Find Extreme Order Block matching the trend direction on 1H (institutional zones)
  * 3. Calculate Fibonacci retracement of the last swing move on 1H
  * 4. Check if current price (15m) is at 79% fib retracement AND inside/near the OB zone
- * 5. SL below Higher Low (LONG) or above Lower High (SHORT) from 1H structure
- * 6. TP at previous swing high/low from 1H
- * 7. Require minimum R:R of 1.8
- * 8. Require minimum distance for SL (0.5%) and TP (1.0%) to avoid noise
+ * 5. **NEW: Wait for entry confirmation on 15m (MSS, rejection candle, optimal zone)**
+ * 6. SL below Higher Low (LONG) or above Lower High (SHORT) from 1H structure
+ * 7. TP at previous swing high/low from 1H
+ * 8. Require minimum R:R of 1.8
+ * 9. Require minimum distance for SL (0.5%) and TP (1.0%) to avoid noise
+ *
+ * Entry Confirmation (ICT Methodology):
+ * - Price must be in optimal entry zone (around 50% of OB)
+ * - Market Structure Shift (MSS) on 15m timeframe
+ * - Rejection candle pattern (optional but strengthens signal)
+ * - Proper retest of OB zone (price came from outside, entered zone)
  *
  * Also emits 'extreme_ob_watch' signals for near-miss candidates
- * (valid OB + structure, but price not yet in zone) for Telegram alerts.
+ * (valid OB + structure, but price not yet in zone or not confirmed) for Telegram alerts.
  */
 
 import { detectMarketStructure } from './marketStructure.js';
 import { isPriceInFibZone, calcFibLevels } from './fibonacci.js';
 import { findRelevantOrderBlock, isPriceInOrderBlock } from './orderBlock.js';
+import { confirmEntry, calculateOptimalEntry } from './entryConfirmation.js';
 
 const SIGNAL_TYPE       = 'extreme_ob';
 const SIGNAL_TYPE_WATCH = 'extreme_ob_watch'; // near-miss, not yet in zone
@@ -87,7 +95,16 @@ export function detectExtremeOB(klines1h, klines15m, fundingRate = null) {
   const inFibZone = fibResult.inZone;
   const inOBZone  = isPriceInOrderBlock(entry, ob);
 
-  // ── Step 5: SL Placement ─────────────────────────────────────────────────
+  // ── Step 5: Entry Confirmation (ICT Methodology) ──────────────────────────
+  // NEW: Check for entry confirmation signals on 15m timeframe
+  // - Price in optimal entry zone (50% of OB)
+  // - Market Structure Shift (MSS) on 15m
+  // - Rejection candle (optional)
+  // - Proper retest of OB zone
+  
+  const entryConfirmation = confirmEntry(klines15m, ob, direction, entry);
+  
+  // ── Step 6: SL Placement ─────────────────────────────────────────────────
   let stopLoss, slAnchorLabel, slAnchorPrice;
 
   if (direction === 'LONG') {
@@ -115,9 +132,14 @@ export function detectExtremeOB(klines1h, klines15m, fundingRate = null) {
   // ── Step 6: Take Profit ───────────────────────────────────────────────────
   const takeProfit = direction === 'LONG' ? lastSwingHigh : lastSwingLow;
 
-  // ── Step 7: Distance Validation (avoid noise) ─────────────────────────────
-  const slDistancePct = Math.abs((stopLoss - entry) / entry * 100);
-  const tpDistancePct = Math.abs((takeProfit - entry) / entry * 100);
+  // ── Step 7: Optimal Entry Price ───────────────────────────────────────────
+  // Calculate optimal entry based on OB zone (prefer 50% of OB)
+  const optimalEntry = calculateOptimalEntry(entry, ob, direction);
+
+  // ── Step 8: Distance Validation (avoid noise) ─────────────────────────────
+  // Use optimal entry for distance calculation
+  const slDistancePct = Math.abs((stopLoss - optimalEntry) / optimalEntry * 100);
+  const tpDistancePct = Math.abs((takeProfit - optimalEntry) / optimalEntry * 100);
 
   if (slDistancePct < MIN_SL_DISTANCE_PCT) {
     console.log(`[ob] skip ${sym}: SL too close (${slDistancePct.toFixed(2)}% < ${MIN_SL_DISTANCE_PCT}%)`);
@@ -129,34 +151,35 @@ export function detectExtremeOB(klines1h, klines15m, fundingRate = null) {
     return signals;
   }
 
-  // ── Step 8: R:R Validation ────────────────────────────────────────────────
-  const risk   = Math.abs(entry - stopLoss);
-  const reward = Math.abs(takeProfit - entry);
+  // ── Step 9: R:R Validation ────────────────────────────────────────────────
+  // Use optimal entry for R:R calculation
+  const risk   = Math.abs(optimalEntry - stopLoss);
+  const reward = Math.abs(takeProfit - optimalEntry);
 
-  if (direction === 'LONG'  && stopLoss >= entry) {
+  if (direction === 'LONG'  && stopLoss >= optimalEntry) {
     console.log(`[ob] skip ${sym}: SL ${stopLoss.toFixed(6)} >= entry (invalid LONG SL)`);
     return signals;
   }
-  if (direction === 'SHORT' && stopLoss <= entry) {
+  if (direction === 'SHORT' && stopLoss <= optimalEntry) {
     console.log(`[ob] skip ${sym}: SL ${stopLoss.toFixed(6)} <= entry (invalid SHORT SL)`);
     return signals;
   }
-  if (direction === 'LONG'  && takeProfit <= entry) {
+  if (direction === 'LONG'  && takeProfit <= optimalEntry) {
     console.log(`[ob] skip ${sym}: TP ${takeProfit.toFixed(6)} <= entry (invalid LONG TP)`);
     return signals;
   }
-  if (direction === 'SHORT' && takeProfit >= entry) {
+  if (direction === 'SHORT' && takeProfit >= optimalEntry) {
     console.log(`[ob] skip ${sym}: TP ${takeProfit.toFixed(6)} >= entry (invalid SHORT TP)`);
     return signals;
   }
 
   const rrRatio    = risk > 0 ? reward / risk : 0;
-  const tpPercent  = ((takeProfit - entry) / entry * 100) * (direction === 'LONG' ? 1 : -1);
-  const slPercent  = ((stopLoss   - entry) / entry * 100) * (direction === 'LONG' ? 1 : -1);
+  const tpPercent  = ((takeProfit - optimalEntry) / optimalEntry * 100) * (direction === 'LONG' ? 1 : -1);
+  const slPercent  = ((stopLoss   - optimalEntry) / optimalEntry * 100) * (direction === 'LONG' ? 1 : -1);
 
   // Build shared meta object
   const meta = {
-    timeframe:     '1H structure + 15m entry',
+    timeframe:     '1H structure + 15m entry + ICT confirmation',
     trend:         ms.trend,
     lastSwingHigh,
     lastSwingLow,
@@ -183,7 +206,8 @@ export function detectExtremeOB(klines1h, klines15m, fundingRate = null) {
       '78.6%': levels[0.786],
       '88.6%': levels[0.886],
     },
-    entry,
+    currentPrice:  entry,
+    entry:         optimalEntry,  // Use optimal entry (50% of OB)
     stopLoss,
     takeProfit,
     tpPercent:  parseFloat(tpPercent.toFixed(4)),
@@ -193,31 +217,67 @@ export function detectExtremeOB(klines1h, klines15m, fundingRate = null) {
     rrRatio:    parseFloat(rrRatio.toFixed(2)),
     minRR:      MIN_RR,
     fundingRate,
+    // Entry confirmation data
+    entryConfirmation: {
+      confirmed:      entryConfirmation.confirmed,
+      score:          entryConfirmation.score,
+      maxScore:       entryConfirmation.maxScore,
+      strength:       entryConfirmation.strength,
+      reason:         entryConfirmation.reason,
+      inOptimalZone:  entryConfirmation.signals.inOptimalZone,
+      mssDetected:    entryConfirmation.signals.mssDetected,
+      rejectionCandle: entryConfirmation.signals.rejectionCandle,
+      properRetest:   entryConfirmation.signals.properRetest,
+    },
   };
 
-  // ── Near-miss: valid setup but price not yet in OB zone ──────────────────
-  // Entry ONLY when price is inside the Order Block zone.
-  // Being in fib zone alone is not enough — we need price to retrace INTO the OB.
+  // ── Near-miss or Waiting for Confirmation ────────────────────────────────
+  // Entry requires:
+  // 1. Price in OB zone
+  // 2. Entry confirmation (MSS + optimal zone at minimum)
+  
   if (!inOBZone) {
+    // Price not yet in OB zone - emit watch signal
     if (rrRatio >= MIN_RR) {
       const distToOB = direction === 'LONG'
         ? ((ob.obHigh - entry) / entry * 100).toFixed(2)
         : ((entry - ob.obLow) / entry * 100).toFixed(2);
       console.log(`[ob] watch ${sym}: waiting for retrace to OB (${ob.obLow?.toFixed(6)}-${ob.obHigh?.toFixed(6)}, dist=${distToOB}%)`);
-      signals.push({ type: SIGNAL_TYPE_WATCH, direction, meta: { ...meta, isWatch: true } });
+      signals.push({ type: SIGNAL_TYPE_WATCH, direction, meta: { ...meta, isWatch: true, waitingFor: 'price_in_ob_zone' } });
     } else {
       console.log(`[ob] skip ${sym}: not in OB zone and R:R ${rrRatio.toFixed(2)} < ${MIN_RR}`);
     }
     return signals;
   }
 
-  // ── Full signal: price inside OB zone + R:R valid ─────────────────────────
-  if (rrRatio < MIN_RR) {
-    console.log(`[ob] skip ${sym}: R:R ${rrRatio.toFixed(2)} < ${MIN_RR} | entry=${entry.toFixed(6)} sl=${stopLoss.toFixed(6)} tp=${takeProfit.toFixed(6)}`);
+  // Price is in OB zone, but check entry confirmation
+  if (!entryConfirmation.confirmed) {
+    // Valid setup but waiting for entry confirmation
+    if (rrRatio >= MIN_RR) {
+      console.log(`[ob] watch ${sym}: in OB zone but waiting for confirmation (score=${entryConfirmation.score}/${entryConfirmation.maxScore}, ${entryConfirmation.reason})`);
+      signals.push({ 
+        type: SIGNAL_TYPE_WATCH, 
+        direction, 
+        meta: { 
+          ...meta, 
+          isWatch: true, 
+          waitingFor: 'entry_confirmation',
+          confirmationNeeded: entryConfirmation.reason,
+        } 
+      });
+    } else {
+      console.log(`[ob] skip ${sym}: R:R ${rrRatio.toFixed(2)} < ${MIN_RR}`);
+    }
     return signals;
   }
 
-  console.log(`[ob] SIGNAL ${sym}: ${direction} R:R=${rrRatio.toFixed(2)} entry=${entry} sl=${stopLoss} tp=${takeProfit} (1H structure, 15m entry, IN OB ZONE)`);
+  // ── Full signal: price in OB + entry confirmed + R:R valid ────────────────
+  if (rrRatio < MIN_RR) {
+    console.log(`[ob] skip ${sym}: R:R ${rrRatio.toFixed(2)} < ${MIN_RR} | entry=${optimalEntry.toFixed(6)} sl=${stopLoss.toFixed(6)} tp=${takeProfit.toFixed(6)}`);
+    return signals;
+  }
+
+  console.log(`[ob] SIGNAL ${sym}: ${direction} R:R=${rrRatio.toFixed(2)} entry=${optimalEntry.toFixed(6)} sl=${stopLoss.toFixed(6)} tp=${takeProfit.toFixed(6)} (1H structure, 15m entry, ICT confirmed: ${entryConfirmation.strength})`);
   signals.push({ type: SIGNAL_TYPE, direction, meta });
 
   return signals;

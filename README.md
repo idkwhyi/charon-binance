@@ -4,9 +4,21 @@ Bot trading otomatis untuk **Binance USDM Perpetual Futures** dengan dukungan **
 
 > ⚠️ **Ini bukan financial advice.** Gunakan `dry_run` atau Testnet dulu sebelum live trading.
 
+## 🚀 Version 2.1.0 - ICT Entry Confirmation
+
+**LATEST!** Bot sekarang menggunakan **ICT (Inner Circle Trader) entry confirmation**:
+- **Wait for Market Structure Shift (MSS)** on 15m before entry
+- **Entry at optimal level** (50% of OB zone) for best risk-reward
+- **Rejection candle detection** for additional confirmation
+- **Confirmation scoring system** (minimum 6/9 points required)
+- **No more premature entries** - wait for proper price action confirmation
+
+📚 **Latest Documentation:**
+- 🎯 [ENTRY_CONFIRMATION_UPGRADE.md](ENTRY_CONFIRMATION_UPGRADE.md) - ICT methodology details
+
 ## 🚀 Version 2.0.0 - Multi-Timeframe Analysis
 
-**NEW!** Bot sekarang menggunakan **multi-timeframe analysis**:
+Bot menggunakan **multi-timeframe analysis**:
 - **1H timeframe** untuk market structure, order blocks, dan fibonacci (larger swings)
 - **15m timeframe** untuk entry timing (precise entry)
 - **Minimum distance filters** untuk menghindari noise (SL >= 0.5%, TP >= 1.0%)
