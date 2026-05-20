@@ -22,10 +22,10 @@
  *
  * @param {Array}  klines           - sorted oldest first
  * @param {number} impulseMinPct    - min body % of impulse candle (default 0.5%)
- * @param {number} lookback         - candles to look back (default 40)
+ * @param {number} lookback         - candles to look back (default 100 for larger institutional zones)
  * @param {number} volumeMultiplier - OB candle volume >= N × avg (default 1.0, relaxed)
  */
-export function detectOrderBlocks(klines, impulseMinPct = 0.5, lookback = 40, volumeMultiplier = 1.0) {
+export function detectOrderBlocks(klines, impulseMinPct = 0.5, lookback = 100, volumeMultiplier = 1.0) {
   const orderBlocks = [];
   const start = Math.max(2, klines.length - lookback);
 

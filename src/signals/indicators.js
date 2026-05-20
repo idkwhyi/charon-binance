@@ -86,26 +86,29 @@ export function detectFundingExtreme(fundingRate, longThreshold = 0.001, shortTh
 
 /**
  * Run all indicator checks and return triggered signals.
- * All indicators run on 15m klines.
+ * Most indicators run on 15m klines for quick signals.
+ * Extreme OB uses 1h for structure and 15m for entry timing.
  *
- * @param {Array} klines - 15m klines, sorted oldest first
+ * @param {Array} klines1h - 1h klines for structure analysis
+ * @param {Array} klines15m - 15m klines for entry timing
  * @param {number|null} fundingRate
  * @param {object} stratConfig
  */
-export function runIndicators(klines, fundingRate, stratConfig) {
+export function runIndicators(klines1h, klines15m, fundingRate, stratConfig) {
   const signals = [];
 
-  const volSpike = detectVolumeSpike(klines, stratConfig.min_volume_spike_ratio || 3);
+  // Quick indicators use 15m for faster signals
+  const volSpike = detectVolumeSpike(klines15m, stratConfig.min_volume_spike_ratio || 3);
   if (volSpike.detected) {
     signals.push({ type: 'volume_spike', direction: volSpike.direction, meta: { ratio: volSpike.ratio } });
   }
 
-  const rsi = detectRsiSignal(klines);
+  const rsi = detectRsiSignal(klines15m);
   if (rsi.detected) {
     signals.push({ type: rsi.signal, direction: rsi.direction, meta: { rsi: rsi.rsi } });
   }
 
-  const ema = detectEmaCross(klines);
+  const ema = detectEmaCross(klines15m);
   if (ema.detected) {
     signals.push({ type: ema.signal, direction: ema.direction, meta: { ema9: ema.ema9, ema21: ema.ema21 } });
   }
@@ -117,9 +120,9 @@ export function runIndicators(klines, fundingRate, stratConfig) {
     }
   }
 
-  // Extreme Order Block: market structure + OB detection, all on 15m
-  if (klines && klines.length >= 20) {
-    const obSignals = detectExtremeOB(klines, fundingRate);
+  // Extreme Order Block: use 1h for structure, 15m for entry timing
+  if (klines1h && klines1h.length >= 20 && klines15m && klines15m.length >= 20) {
+    const obSignals = detectExtremeOB(klines1h, klines15m, fundingRate);
     signals.push(...obSignals);
   }
 

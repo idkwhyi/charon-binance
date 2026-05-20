@@ -58,6 +58,7 @@ export function buildCandidate(signal) {
       detectedAt: signal.detectedAt || now(),
     },
     klineSnapshot: {
+      last5_1h: (signal.klines1h || []).slice(-5),
       last5_15m: (signal.klines15m || []).slice(-5),
     },
     createdAtMs: now(),

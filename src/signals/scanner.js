@@ -10,7 +10,7 @@ import { now } from '../utils.js';
 let candidateHandler = null;
 let ws = null;
 let wsReconnectTimer = null;
-const klineCache = new Map(); // symbol → { '15m': klines[] }
+const klineCache = new Map(); // symbol → { '1h': klines[], '15m': klines[] }
 
 // Deduplicate watch alerts — same symbol+direction max once per 30 min
 const watchAlertSeen = new Map();
@@ -20,15 +20,16 @@ export function setCandidateHandler(fn) {
 }
 
 /**
- * Fetch initial klines for all watchlist symbols (15m only).
+ * Fetch initial klines for all watchlist symbols (1h and 15m).
  */
 export async function warmupKlines() {
   const watchlist = getWatchlist();
-  console.log(`[scanner] warming up klines for ${watchlist.length} symbols...`);
+  console.log(`[scanner] warming up klines for ${watchlist.length} symbols (1h + 15m)...`);
   for (const symbol of watchlist) {
     try {
+      const k1h = await fetchKlines(symbol, '1h', 100);
       const k15m = await fetchKlines(symbol, '15m', 100);
-      klineCache.set(symbol, { '15m': k15m });
+      klineCache.set(symbol, { '1h': k1h, '15m': k15m });
     } catch (err) {
       console.log(`[scanner] warmup ${symbol}: ${err.message}`);
     }
@@ -37,7 +38,7 @@ export async function warmupKlines() {
 }
 
 /**
- * Scan all symbols in watchlist using cached 15m klines + live enrichment.
+ * Scan all symbols in watchlist using cached 1h + 15m klines + live enrichment.
  */
 export async function scanSignals() {
   const strat = activeStrategy();
@@ -52,12 +53,18 @@ export async function scanSignals() {
   for (const symbol of watchlist) {
     try {
       const cache = klineCache.get(symbol) || {};
+      let klines1h = cache['1h'];
       let klines15m = cache['15m'];
 
+      // Fetch if missing or insufficient
+      if (!klines1h || klines1h.length < 25) {
+        klines1h = await fetchKlines(symbol, '1h', 100);
+      }
       if (!klines15m || klines15m.length < 25) {
         klines15m = await fetchKlines(symbol, '15m', 100);
-        klineCache.set(symbol, { '15m': klines15m });
       }
+      
+      klineCache.set(symbol, { '1h': klines1h, '15m': klines15m });
 
       // Fetch funding rate
       let fundingRate = null;
@@ -66,8 +73,8 @@ export async function scanSignals() {
         fundingRate = Number(premium.lastFundingRate || 0);
       } catch { /* ignore */ }
 
-      // Run all indicators on 15m klines
-      const allSignals = runIndicators(klines15m, fundingRate, strat);
+      // Run all indicators with both timeframes
+      const allSignals = runIndicators(klines1h, klines15m, fundingRate, strat);
 
       // Separate watch alerts from actionable signals
       const watchSignals = allSignals.filter(s => s.type === 'extreme_ob_watch');
@@ -102,6 +109,7 @@ export async function scanSignals() {
             direction: signal.direction,
             signalMeta: signal.meta,
             ticker,
+            klines1h,
             klines15m,
             fundingRate,
             openInterest: oi ? Number(oi.openInterest) : null,
@@ -118,17 +126,24 @@ export async function scanSignals() {
 }
 
 /**
- * Start Binance Futures WebSocket — 15m kline streams only.
+ * Start Binance Futures WebSocket — 1h and 15m kline streams.
  */
 export function startWebSocket() {
   function connect() {
     const watchlist = getWatchlist();
-    const streams = watchlist.map(sym => `${sym.toLowerCase()}@kline_15m`);
+    const streams = [];
+    
+    // Add both 1h and 15m streams for each symbol
+    for (const sym of watchlist) {
+      streams.push(`${sym.toLowerCase()}@kline_1h`);
+      streams.push(`${sym.toLowerCase()}@kline_15m`);
+    }
+    
     const wsUrl = `${BINANCE_FUTURES_WS_URL}/stream?streams=${streams.join('/')}`;
     ws = new WebSocket(wsUrl);
 
     ws.on('open', () => {
-      console.log(`[scanner] WebSocket connected (${watchlist.length} symbols, 15m)`);
+      console.log(`[scanner] WebSocket connected (${watchlist.length} symbols, 1h + 15m)`);
     });
 
     ws.on('message', (raw) => {
@@ -140,6 +155,7 @@ export function startWebSocket() {
         if (!k.x) return; // Only closed candles
 
         const symbol = k.s;
+        const interval = k.i; // '1h' or '15m'
         const candle = {
           openTime:    k.t,
           open:        Number(k.o),
@@ -151,11 +167,11 @@ export function startWebSocket() {
           quoteVolume: Number(k.q),
         };
 
-        const cache = klineCache.get(symbol) || { '15m': [] };
-        const arr   = cache['15m'];
+        const cache = klineCache.get(symbol) || { '1h': [], '15m': [] };
+        const arr   = cache[interval] || [];
         arr.push(candle);
         if (arr.length > 100) arr.shift();
-        cache['15m'] = arr;
+        cache[interval] = arr;
         klineCache.set(symbol, cache);
       } catch { /* ignore */ }
     });

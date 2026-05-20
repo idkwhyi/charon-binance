@@ -4,6 +4,22 @@ Bot trading otomatis untuk **Binance USDM Perpetual Futures** dengan dukungan **
 
 > ⚠️ **Ini bukan financial advice.** Gunakan `dry_run` atau Testnet dulu sebelum live trading.
 
+## 🚀 Version 2.0.0 - Multi-Timeframe Analysis
+
+**NEW!** Bot sekarang menggunakan **multi-timeframe analysis**:
+- **1H timeframe** untuk market structure, order blocks, dan fibonacci (larger swings)
+- **15m timeframe** untuk entry timing (precise entry)
+- **Minimum distance filters** untuk menghindari noise (SL >= 0.5%, TP >= 1.0%)
+- **Larger swing detection** untuk setup yang lebih signifikan
+
+📚 **Dokumentasi Upgrade:**
+- 📖 [UPGRADE_SUMMARY.md](UPGRADE_SUMMARY.md) - Quick overview
+- 📘 [MULTI_TIMEFRAME_UPGRADE.md](MULTI_TIMEFRAME_UPGRADE.md) - Full technical details
+- ✅ [TESTING_CHECKLIST.md](TESTING_CHECKLIST.md) - Testing guide
+- ⚙️ [TUNING_GUIDE.md](TUNING_GUIDE.md) - Parameter tuning
+- 🎯 [QUICK_REFERENCE.md](QUICK_REFERENCE.md) - Quick reference card
+- 📝 [CHANGELOG.md](CHANGELOG.md) - Version history
+
 ---
 
 ## Fitur

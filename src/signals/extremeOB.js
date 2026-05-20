@@ -1,14 +1,15 @@
 /**
  * Extreme Order Block Signal Detector
  *
- * Full pipeline:
- * 1. Detect Market Structure on 15m → determine trend direction
- * 2. Find Extreme Order Block matching the trend direction on 5m
- * 3. Calculate Fibonacci retracement of the last swing move
- * 4. Check if current price is at 79% fib retracement AND inside/near the OB zone
- * 5. SL below Higher Low (LONG) or above Lower High (SHORT)
- * 6. TP at previous swing high/low
+ * Multi-Timeframe Pipeline:
+ * 1. Detect Market Structure on 1H → determine trend direction (larger swings)
+ * 2. Find Extreme Order Block matching the trend direction on 1H (institutional zones)
+ * 3. Calculate Fibonacci retracement of the last swing move on 1H
+ * 4. Check if current price (15m) is at 79% fib retracement AND inside/near the OB zone
+ * 5. SL below Higher Low (LONG) or above Lower High (SHORT) from 1H structure
+ * 6. TP at previous swing high/low from 1H
  * 7. Require minimum R:R of 1.8
+ * 8. Require minimum distance for SL (0.5%) and TP (1.0%) to avoid noise
  *
  * Also emits 'extreme_ob_watch' signals for near-miss candidates
  * (valid OB + structure, but price not yet in zone) for Telegram alerts.
@@ -21,25 +22,30 @@ import { findRelevantOrderBlock, isPriceInOrderBlock } from './orderBlock.js';
 const SIGNAL_TYPE       = 'extreme_ob';
 const SIGNAL_TYPE_WATCH = 'extreme_ob_watch'; // near-miss, not yet in zone
 const MIN_RR = 1.8;
+const MIN_SL_DISTANCE_PCT = 0.5;  // minimum 0.5% SL distance
+const MIN_TP_DISTANCE_PCT = 1.0;  // minimum 1.0% TP distance
 
 /**
- * Run the Extreme OB strategy check on 15m klines.
- * Market structure, OB detection, and Fibonacci all use the same 15m timeframe.
+ * Run the Extreme OB strategy check using multi-timeframe analysis.
+ * - 1H klines: Market structure, OB detection, and Fibonacci (larger swings)
+ * - 15m klines: Entry timing (current price for precision)
  *
+ * @param {Array} klines1h - 1h klines, sorted oldest first
  * @param {Array} klines15m - 15m klines, sorted oldest first
  * @param {number|null} fundingRate
  * @returns {Array<{ type: string, direction: 'LONG'|'SHORT', meta: object }>}
  */
-export function detectExtremeOB(klines15m, fundingRate = null) {
+export function detectExtremeOB(klines1h, klines15m, fundingRate = null) {
   const signals = [];
 
-  if (!klines15m || klines15m.length < 20) return signals;
+  if (!klines1h || klines1h.length < 20) return signals;
+  if (!klines15m || klines15m.length < 5) return signals;
 
-  // entry = close of the latest 15m candle
+  // Entry = close of the latest 15m candle (precise entry timing)
   const entry = klines15m[klines15m.length - 1].close;
 
-  // ── Step 1: Market Structure ──────────────────────────────────────────────
-  const ms = detectMarketStructure(klines15m, 3, 3);
+  // ── Step 1: Market Structure (1H for larger swings) ──────────────────────
+  const ms = detectMarketStructure(klines1h, 5, 5); // Increased from 3,3 to 5,5 for more significant swings
   if (ms.trend === 'RANGING') return signals;
 
   const direction = ms.trend === 'UPTREND' ? 'LONG' : 'SHORT';
@@ -58,14 +64,14 @@ export function detectExtremeOB(klines15m, fundingRate = null) {
     }
   }
 
-  // ── Step 2: Find Extreme Order Block (15m) ────────────────────────────────
-  const ob = findRelevantOrderBlock(klines15m, direction, entry);
+  // ── Step 2: Find Extreme Order Block (1H for institutional zones) ────────
+  const ob = findRelevantOrderBlock(klines1h, direction, entry);
   if (!ob) {
     console.log(`[ob] skip ${sym}: no valid OB found`);
     return signals;
   }
 
-  // ── Step 3: Fibonacci Retracement ────────────────────────────────────────
+  // ── Step 3: Fibonacci Retracement (1H swings) ────────────────────────────
   const { swingHighs, swingLows } = ms;
   if (swingHighs.length < 1 || swingLows.length < 1) {
     console.log(`[ob] skip ${sym}: not enough swing points`);
@@ -109,7 +115,21 @@ export function detectExtremeOB(klines15m, fundingRate = null) {
   // ── Step 6: Take Profit ───────────────────────────────────────────────────
   const takeProfit = direction === 'LONG' ? lastSwingHigh : lastSwingLow;
 
-  // ── Step 7: R:R Validation ────────────────────────────────────────────────
+  // ── Step 7: Distance Validation (avoid noise) ─────────────────────────────
+  const slDistancePct = Math.abs((stopLoss - entry) / entry * 100);
+  const tpDistancePct = Math.abs((takeProfit - entry) / entry * 100);
+
+  if (slDistancePct < MIN_SL_DISTANCE_PCT) {
+    console.log(`[ob] skip ${sym}: SL too close (${slDistancePct.toFixed(2)}% < ${MIN_SL_DISTANCE_PCT}%)`);
+    return signals;
+  }
+
+  if (tpDistancePct < MIN_TP_DISTANCE_PCT) {
+    console.log(`[ob] skip ${sym}: TP too close (${tpDistancePct.toFixed(2)}% < ${MIN_TP_DISTANCE_PCT}%)`);
+    return signals;
+  }
+
+  // ── Step 8: R:R Validation ────────────────────────────────────────────────
   const risk   = Math.abs(entry - stopLoss);
   const reward = Math.abs(takeProfit - entry);
 
@@ -136,6 +156,7 @@ export function detectExtremeOB(klines15m, fundingRate = null) {
 
   // Build shared meta object
   const meta = {
+    timeframe:     '1H structure + 15m entry',
     trend:         ms.trend,
     lastSwingHigh,
     lastSwingLow,
@@ -167,6 +188,8 @@ export function detectExtremeOB(klines15m, fundingRate = null) {
     takeProfit,
     tpPercent:  parseFloat(tpPercent.toFixed(4)),
     slPercent:  parseFloat(slPercent.toFixed(4)),
+    slDistancePct: parseFloat(slDistancePct.toFixed(2)),
+    tpDistancePct: parseFloat(tpDistancePct.toFixed(2)),
     rrRatio:    parseFloat(rrRatio.toFixed(2)),
     minRR:      MIN_RR,
     fundingRate,
@@ -194,7 +217,7 @@ export function detectExtremeOB(klines15m, fundingRate = null) {
     return signals;
   }
 
-  console.log(`[ob] SIGNAL ${sym}: ${direction} R:R=${rrRatio.toFixed(2)} entry=${entry} sl=${stopLoss} tp=${takeProfit} (IN OB ZONE)`);
+  console.log(`[ob] SIGNAL ${sym}: ${direction} R:R=${rrRatio.toFixed(2)} entry=${entry} sl=${stopLoss} tp=${takeProfit} (1H structure, 15m entry, IN OB ZONE)`);
   signals.push({ type: SIGNAL_TYPE, direction, meta });
 
   return signals;

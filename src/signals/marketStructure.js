@@ -10,11 +10,11 @@
  * A swing low:  candle[i].low  is lowest  in window [i-left .. i+right]
  *
  * @param {Array} klines - sorted oldest first
- * @param {number} left  - bars to the left
- * @param {number} right - bars to the right
+ * @param {number} left  - bars to the left (default 5 for more significant swings)
+ * @param {number} right - bars to the right (default 5 for more significant swings)
  * @returns {{ swingHighs: Array, swingLows: Array }}
  */
-export function findSwingPoints(klines, left = 3, right = 3) {
+export function findSwingPoints(klines, left = 5, right = 5) {
   const swingHighs = [];
   const swingLows = [];
 
@@ -40,11 +40,11 @@ export function findSwingPoints(klines, left = 3, right = 3) {
  * RANGING:   neither condition met
  *
  * @param {Array} klines
- * @param {number} left
- * @param {number} right
+ * @param {number} left - default 5 for more significant swings
+ * @param {number} right - default 5 for more significant swings
  * @returns {{ trend: 'UPTREND'|'DOWNTREND'|'RANGING', swingHighs: Array, swingLows: Array, lastHH: number|null, lastHL: number|null, lastLL: number|null, lastLH: number|null }}
  */
-export function detectMarketStructure(klines, left = 3, right = 3) {
+export function detectMarketStructure(klines, left = 5, right = 5) {
   const { swingHighs, swingLows } = findSwingPoints(klines, left, right);
 
   const result = {
