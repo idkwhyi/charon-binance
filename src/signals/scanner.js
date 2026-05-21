@@ -12,7 +12,9 @@ let ws = null;
 let wsReconnectTimer = null;
 const klineCache = new Map(); // symbol → { '1h': klines[], '15m': klines[] }
 
-// Deduplicate watch alerts — same symbol+direction max once per 30 min
+// Deduplicate watch alerts — same symbol+direction+OB zone max once per 30 min
+// Key format: "SYMBOL:DIRECTION:OBLOW-OBHIGH"
+// This allows different OB zones on the same symbol to send separate alerts
 const watchAlertSeen = new Map();
 
 export function setCandidateHandler(fn) {
@@ -80,13 +82,23 @@ export async function scanSignals() {
       const watchSignals = allSignals.filter(s => s.type === 'extreme_ob_watch');
       const triggered    = allSignals.filter(s => allowedSignals.includes(s.type));
 
-      // Send watch alerts (deduplicated per 30 min)
+      // Send watch alerts (deduplicated per 30 min based on OB zone)
       for (const watchSig of watchSignals) {
-        const watchKey = `${symbol}:${watchSig.direction}`;
+        // Create unique key based on symbol, direction, and OB zone
+        // This prevents duplicate alerts for the SAME OB zone
+        // but allows alerts for DIFFERENT OB zones on the same symbol
+        const obHigh = watchSig.meta?.obHigh?.toFixed(4) || '0';
+        const obLow = watchSig.meta?.obLow?.toFixed(4) || '0';
+        const watchKey = `${symbol}:${watchSig.direction}:${obLow}-${obHigh}`;
+        
         const lastSent = watchAlertSeen.get(watchKey) || 0;
         if (now() - lastSent > 30 * 60_000) {
           watchAlertSeen.set(watchKey, now());
           sendWatchAlert(symbol, watchSig.direction, watchSig.meta).catch(() => {});
+          console.log(`[scanner] watch alert sent: ${watchKey}`);
+        } else {
+          const minutesAgo = Math.floor((now() - lastSent) / 60_000);
+          console.log(`[scanner] watch alert skipped (sent ${minutesAgo}m ago): ${watchKey}`);
         }
       }
 

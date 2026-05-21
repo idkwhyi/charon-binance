@@ -4,17 +4,32 @@ Bot trading otomatis untuk **Binance USDM Perpetual Futures** dengan dukungan **
 
 > ⚠️ **Ini bukan financial advice.** Gunakan `dry_run` atau Testnet dulu sebelum live trading.
 
+## 🚀 Version 2.2.0 - PostgreSQL Migration + Duplicate Alert Fix
+
+**LATEST!** Bot sekarang mendukung **PostgreSQL** dan fix duplicate alerts:
+- **PostgreSQL support** untuk scalability dan performance
+- **Migration script** untuk migrasi dari SQLite
+- **JSONB support** untuk flexible schema
+- **Database views** untuk analytics
+- **Fixed duplicate watch alerts** - OB zone included in deduplication key
+- **Enhanced logging** untuk monitoring alerts
+
+📚 **Latest Documentation:**
+- 🐘 [POSTGRESQL_MIGRATION.md](POSTGRESQL_MIGRATION.md) - PostgreSQL migration guide
+- 🔔 [DUPLICATE_ALERT_FIX.md](DUPLICATE_ALERT_FIX.md) - Alert deduplication fix
+
 ## 🚀 Version 2.1.0 - ICT Entry Confirmation
 
-**LATEST!** Bot sekarang menggunakan **ICT (Inner Circle Trader) entry confirmation**:
+Bot menggunakan **ICT (Inner Circle Trader) entry confirmation**:
 - **Wait for Market Structure Shift (MSS)** on 15m before entry
 - **Entry at optimal level** (50% of OB zone) for best risk-reward
 - **Rejection candle detection** for additional confirmation
 - **Confirmation scoring system** (minimum 6/9 points required)
 - **No more premature entries** - wait for proper price action confirmation
 
-📚 **Latest Documentation:**
+📚 **Documentation:**
 - 🎯 [ENTRY_CONFIRMATION_UPGRADE.md](ENTRY_CONFIRMATION_UPGRADE.md) - ICT methodology details
+- 📋 [ENTRY_CONFIRMATION_SUMMARY.md](ENTRY_CONFIRMATION_SUMMARY.md) - Quick reference
 
 ## 🚀 Version 2.0.0 - Multi-Timeframe Analysis
 
@@ -24,7 +39,7 @@ Bot menggunakan **multi-timeframe analysis**:
 - **Minimum distance filters** untuk menghindari noise (SL >= 0.5%, TP >= 1.0%)
 - **Larger swing detection** untuk setup yang lebih signifikan
 
-📚 **Dokumentasi Upgrade:**
+📚 **Dokumentasi:**
 - 📖 [UPGRADE_SUMMARY.md](UPGRADE_SUMMARY.md) - Quick overview
 - 📘 [MULTI_TIMEFRAME_UPGRADE.md](MULTI_TIMEFRAME_UPGRADE.md) - Full technical details
 - ✅ [TESTING_CHECKLIST.md](TESTING_CHECKLIST.md) - Testing guide
