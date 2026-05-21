@@ -112,7 +112,7 @@ async function handleApprovedBuy(selectedRow, decision, batchId, triggerCandidat
   const rowCandidate = selectedRow.candidate || selectedRow;
 
   if (mode === 'dry_run') {
-    const positionId = createDryRunPosition(selectedRow.id, rowCandidate, decision);
+    const positionId = await createDryRunPosition(selectedRow.id, rowCandidate, decision);
     console.log(`[dry_run] opened position #${positionId} ${rowCandidate.symbol} ${decision.direction} ${rowCandidate.leverage}x`);
     await sendPositionOpen(positionId);
     return;

@@ -1,6 +1,11 @@
 import { db } from './connection.js';
+import { pool } from './pg-connection.js';
 import { now, json } from '../utils.js';
 import { TRADING_MODE } from '../config.js';
+import { reserveMargin, releaseMargin, canOpenPosition } from './virtualBalance.js';
+
+// Check if we're using PostgreSQL
+const USE_POSTGRES = process.env.USE_POSTGRES === 'true';
 
 export function tradingMode() {
   return TRADING_MODE;
@@ -47,7 +52,7 @@ function calcTpSlPercent(direction, entryPrice, stopLoss, takeProfit) {
   }
 }
 
-export function createDryRunPosition(candidateId, candidate, decision) {
+export async function createDryRunPosition(candidateId, candidate, decision) {
   const entryPrice = candidate.metrics.markPrice;
   const obMeta = candidate.signals?.meta || {};
 
@@ -61,6 +66,18 @@ export function createDryRunPosition(candidateId, candidate, decision) {
     slPercent = decision.suggested_sl_percent;
   }
 
+  // Calculate margin requirement for dry_run
+  const marginRequired = candidate.entryUsdt || 0;
+  
+  // Check virtual balance before opening position
+  if (!(await canOpenPosition(marginRequired))) {
+    throw new Error(`Insufficient virtual balance for ${candidate.symbol} ${decision.direction} position (${marginRequired.toFixed(2)} USDT required)`);
+  }
+  
+  // Reserve margin in virtual balance
+  await reserveMargin(marginRequired);
+
+  // Create position in SQLite (for compatibility)
   const result = db.prepare(`
     INSERT INTO positions (
       candidate_id, symbol, direction, leverage, margin_type,
@@ -78,6 +95,8 @@ export function createDryRunPosition(candidateId, candidate, decision) {
     candidate.metrics.liqPrice || null,
     now(), candidate.strategyId,
   );
+  
+  console.log(`[dry_run] Reserved ${marginRequired.toFixed(2)} USDT margin for position ${result.lastInsertRowid}`);
   return result.lastInsertRowid;
 }
 
@@ -115,13 +134,27 @@ export function createLivePosition(candidateId, candidate, decision, orderId) {
   return result.lastInsertRowid;
 }
 
-export function closePosition(id, exitPrice, exitReason, pnlPercent, pnlUsdt, signature = null) {
+export async function closePosition(id, exitPrice, exitReason, pnlPercent, pnlUsdt, signature = null) {
+  // Get position info before closing
+  const position = db.prepare("SELECT * FROM positions WHERE id = ?").get(id);
+  
+  if (!position) {
+    throw new Error(`Position ${id} not found`);
+  }
+  
   db.prepare(`
     UPDATE positions
     SET status = 'closed', closed_at_ms = ?, exit_price = ?, exit_reason = ?,
         pnl_percent = ?, pnl_usdt = ?, binance_order_id = COALESCE(?, binance_order_id)
     WHERE id = ?
   `).run(now(), exitPrice, exitReason, pnlPercent, pnlUsdt, signature, id);
+  
+  // Release margin for dry_run positions
+  if (position.execution_mode === 'dry_run') {
+    const marginUsed = position.entry_usdt || 0;
+    await releaseMargin(marginUsed, pnlUsdt || 0);
+    console.log(`[dry_run] Released ${marginUsed.toFixed(2)} USDT margin, PnL: ${(pnlUsdt || 0).toFixed(2)} USDT`);
+  }
 }
 
 export function updatePositionWatermarks(id, highWater, lowWater, trailingArmed) {

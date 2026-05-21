@@ -95,7 +95,7 @@ export async function refreshPosition(position, autoExit = true) {
         markPrice = sell.fillPrice;
       }
 
-      closePosition(position.id, markPrice, exitReason, finalPnlPercent, finalPnlUsdt);
+      await closePosition(position.id, markPrice, exitReason, finalPnlPercent, finalPnlUsdt);
       logTrade(position.id, position.symbol, position.direction, 'sell', markPrice,
         finalPnlPercent, finalPnlUsdt, exitReason, { pnlPercent: finalPnlPercent, pnlUsdt: finalPnlUsdt });
 

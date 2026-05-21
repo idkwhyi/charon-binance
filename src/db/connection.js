@@ -123,6 +123,24 @@ export function initDb() {
       status  TEXT NOT NULL DEFAULT 'active',
       created_at_ms INTEGER NOT NULL
     );
+
+    -- Virtual balance for dry_run mode backtesting
+    CREATE TABLE IF NOT EXISTS virtual_balance (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      balance_usdt REAL NOT NULL DEFAULT 1000.00,
+      available_balance REAL NOT NULL DEFAULT 1000.00,
+      margin_used REAL NOT NULL DEFAULT 0.00,
+      unrealized_pnl REAL NOT NULL DEFAULT 0.00,
+      total_realized_pnl REAL NOT NULL DEFAULT 0.00,
+      total_trades INTEGER NOT NULL DEFAULT 0,
+      winning_trades INTEGER NOT NULL DEFAULT 0,
+      losing_trades INTEGER NOT NULL DEFAULT 0,
+      max_drawdown_percent REAL NOT NULL DEFAULT 0.00,
+      peak_balance REAL NOT NULL DEFAULT 1000.00,
+      execution_mode TEXT NOT NULL DEFAULT 'dry_run',
+      created_at TEXT DEFAULT (datetime('now')),
+      updated_at TEXT DEFAULT (datetime('now'))
+    );
   `);
 
   // Seed default strategy if empty
@@ -130,6 +148,16 @@ export function initDb() {
   if (!existing) {
     db.prepare("INSERT INTO strategy_config (key, value) VALUES ('active_strategy', 'scalp')").run();
     seedDefaultStrategies();
+  }
+
+  // Initialize virtual balance if not exists
+  const virtualBalance = db.prepare("SELECT * FROM virtual_balance WHERE execution_mode = 'dry_run'").get();
+  if (!virtualBalance) {
+    db.prepare(`
+      INSERT INTO virtual_balance (balance_usdt, available_balance, execution_mode) 
+      VALUES (1000.00, 1000.00, 'dry_run')
+    `).run();
+    console.log('[db] initialized virtual balance: 1000 USDT');
   }
 
   // Always ensure newer strategies are present and up-to-date

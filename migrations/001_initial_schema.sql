@@ -178,6 +178,32 @@ CREATE TABLE IF NOT EXISTS strategy_config (
 );
 
 -- ============================================================================
+-- TABLE: virtual_balance
+-- Virtual balance tracking for dry_run mode backtesting
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS virtual_balance (
+    id SERIAL PRIMARY KEY,
+    balance_usdt DECIMAL(20, 8) NOT NULL DEFAULT 1000.00,
+    available_balance DECIMAL(20, 8) NOT NULL DEFAULT 1000.00,
+    margin_used DECIMAL(20, 8) NOT NULL DEFAULT 0.00,
+    unrealized_pnl DECIMAL(20, 8) NOT NULL DEFAULT 0.00,
+    total_realized_pnl DECIMAL(20, 8) NOT NULL DEFAULT 0.00,
+    total_trades INTEGER NOT NULL DEFAULT 0,
+    winning_trades INTEGER NOT NULL DEFAULT 0,
+    losing_trades INTEGER NOT NULL DEFAULT 0,
+    max_drawdown_percent DECIMAL(10, 4) NOT NULL DEFAULT 0.00,
+    peak_balance DECIMAL(20, 8) NOT NULL DEFAULT 1000.00,
+    execution_mode VARCHAR(20) NOT NULL DEFAULT 'dry_run',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Insert default virtual balance for dry_run mode
+INSERT INTO virtual_balance (balance_usdt, available_balance, execution_mode) 
+VALUES (1000.00, 1000.00, 'dry_run') 
+ON CONFLICT DO NOTHING;
+
+-- ============================================================================
 -- TABLE: learning_lessons
 -- Learning lessons from trades
 -- ============================================================================

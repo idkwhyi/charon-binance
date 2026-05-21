@@ -14,6 +14,7 @@ import { db } from '../db/connection.js';
 import { getWatchlist, addToWatchlist, removeFromWatchlist, getPinnedSymbols } from '../db/watchlist.js';
 import { refreshTopGainers } from '../enrichment/topGainers.js';
 import { reconnectWebSocket, warmupKlines } from '../signals/scanner.js';
+import { getVirtualBalanceStats, getBalanceSummary, resetVirtualBalance, initializeVirtualBalance } from '../db/virtualBalance.js';
 
 let bot = null;
 
@@ -41,6 +42,9 @@ export function setupTelegram() {
       else if (cmd === '/debug') await handleDebug(msg, args);
       else if (cmd === '/lesson') await handleLesson(msg, args);
       else if (cmd === '/lessons') await handleLessons(msg);
+      else if (cmd === '/balance') await handleBalance(msg);
+      else if (cmd === '/reset_balance') await handleResetBalance(msg, args);
+      else if (cmd === '/backtest') await handleBacktest(msg);
     } catch (err) {
       await reply(msg, `❌ Error: ${escapeHtml(err.message)}`);
     }
@@ -85,6 +89,11 @@ async function handleHelp(msg) {
     `/debug &lt;SYMBOL&gt; — Diagnose why a symbol has no signal`,
     `/lesson &lt;text&gt; — Add a learning lesson`,
     `/lessons — List active lessons`,
+    ``,
+    `<b>💰 Dry Run / Backtesting:</b>`,
+    `/balance — Show virtual balance (dry_run mode)`,
+    `/reset_balance [amount] — Reset virtual balance (default: 1000 USDT)`,
+    `/backtest — Show backtest performance summary`,
   ].join('\n'));
 }
 
@@ -333,6 +342,118 @@ async function handleLessons(msg) {
   const rows = db.prepare("SELECT id, lesson FROM learning_lessons WHERE status = 'active' ORDER BY id DESC LIMIT 10").all();
   if (!rows.length) return reply(msg, '📚 No active lessons.');
   await reply(msg, `📚 <b>Active Lessons</b>\n${rows.map(r => `• [${r.id}] <i>${escapeHtml(r.lesson)}</i>`).join('\n')}`);
+}
+
+async function handleBalance(msg) {
+  if (TRADING_MODE !== 'dry_run') {
+    return reply(msg, '💰 Virtual balance hanya tersedia di mode <code>dry_run</code>.\nMode saat ini: <code>' + TRADING_MODE + '</code>');
+  }
+
+  try {
+    const summary = await getBalanceSummary();
+    const stats = await getVirtualBalanceStats();
+    
+    await reply(msg, [
+      `💰 <b>Virtual Balance (Dry Run)</b>`,
+      ``,
+      `💵 Balance: <b>${summary.balance}</b>`,
+      `💳 Available: <b>${summary.available}</b>`,
+      `🔒 Margin Used: <b>${summary.margin_used}</b>`,
+      `📊 Unrealized PnL: <b>${summary.unrealized_pnl}</b>`,
+      `💎 Equity: <b>${summary.equity}</b>`,
+      ``,
+      `📈 <b>Performance</b>`,
+      `🎯 Total Return: <b>${summary.total_return}</b>`,
+      `🏆 Win Rate: <b>${summary.win_rate}</b> (${stats.winning_trades}W/${stats.losing_trades}L)`,
+      `📉 Max Drawdown: <b>${summary.max_drawdown}</b>`,
+      `🔢 Total Trades: <b>${summary.total_trades}</b>`,
+    ].join('\n'));
+  } catch (err) {
+    await reply(msg, `❌ Error getting balance: ${escapeHtml(err.message)}`);
+  }
+}
+
+async function handleResetBalance(msg, args) {
+  if (TRADING_MODE !== 'dry_run') {
+    return reply(msg, '💰 Virtual balance reset hanya tersedia di mode <code>dry_run</code>.');
+  }
+
+  const amount = args[0] ? parseFloat(args[0]) : 100;
+  if (isNaN(amount) || amount <= 0) {
+    return reply(msg, '❌ Invalid amount. Usage: /reset_balance [amount]\nContoh: /reset_balance 1000');
+  }
+
+  try {
+    const balance = await resetVirtualBalance(amount);
+    await reply(msg, [
+      `🔄 <b>Virtual Balance Reset</b>`,
+      ``,
+      `💵 New Balance: <b>${balance.balance_usdt.toFixed(2)} USDT</b>`,
+      `💳 Available: <b>${balance.available_balance.toFixed(2)} USDT</b>`,
+      ``,
+      `✅ Ready for new backtest session!`,
+    ].join('\n'));
+  } catch (err) {
+    await reply(msg, `❌ Error resetting balance: ${escapeHtml(err.message)}`);
+  }
+}
+
+async function handleBacktest(msg) {
+  if (TRADING_MODE !== 'dry_run') {
+    return reply(msg, '📊 Backtest summary hanya tersedia di mode <code>dry_run</code>.');
+  }
+
+  try {
+    const stats = await getVirtualBalanceStats();
+    const summary = await getBalanceSummary();
+    
+    // Get recent closed positions for additional stats
+    const recentTrades = db.prepare(`
+      SELECT pnl_usdt, pnl_percent, symbol, direction, exit_reason, closed_at_ms
+      FROM positions 
+      WHERE execution_mode = 'dry_run' AND status = 'closed'
+      ORDER BY closed_at_ms DESC 
+      LIMIT 10
+    `).all();
+
+    const avgWin = stats.winning_trades > 0 
+      ? recentTrades.filter(t => t.pnl_usdt > 0).reduce((sum, t) => sum + t.pnl_usdt, 0) / stats.winning_trades
+      : 0;
+      
+    const avgLoss = stats.losing_trades > 0
+      ? recentTrades.filter(t => t.pnl_usdt <= 0).reduce((sum, t) => sum + t.pnl_usdt, 0) / stats.losing_trades
+      : 0;
+
+    const profitFactor = (avgWin * stats.winning_trades) / Math.abs(avgLoss * stats.losing_trades) || 0;
+
+    await reply(msg, [
+      `📊 <b>Backtest Performance Summary</b>`,
+      ``,
+      `💰 <b>Balance Overview</b>`,
+      `Starting: <b>1000.00 USDT</b>`,
+      `Current: <b>${summary.balance}</b>`,
+      `Peak: <b>${stats.peak_balance.toFixed(2)} USDT</b>`,
+      `Total Return: <b>${summary.total_return}</b>`,
+      ``,
+      `📈 <b>Trading Statistics</b>`,
+      `Total Trades: <b>${stats.total_trades}</b>`,
+      `Win Rate: <b>${summary.win_rate}</b>`,
+      `Wins: <b>${stats.winning_trades}</b> | Losses: <b>${stats.losing_trades}</b>`,
+      ``,
+      `💵 <b>PnL Analysis</b>`,
+      `Avg Win: <b>+${avgWin.toFixed(2)} USDT</b>`,
+      `Avg Loss: <b>${avgLoss.toFixed(2)} USDT</b>`,
+      `Profit Factor: <b>${profitFactor.toFixed(2)}</b>`,
+      `Max Drawdown: <b>${summary.max_drawdown}</b>`,
+      ``,
+      `📋 <b>Recent Trades</b>`,
+      ...recentTrades.slice(0, 5).map(t => 
+        `• ${t.symbol} ${t.direction} → ${t.pnl_usdt >= 0 ? '+' : ''}${t.pnl_usdt.toFixed(2)} USDT (${t.exit_reason})`
+      ),
+    ].join('\n'));
+  } catch (err) {
+    await reply(msg, `❌ Error getting backtest summary: ${escapeHtml(err.message)}`);
+  }
 }
 
 async function handleStrategySelect(query, id) {
