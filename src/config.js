@@ -2,7 +2,15 @@ import dotenv from 'dotenv';
 dotenv.config();
 
 export const APP_NAME = 'Charon Binance Futures';
-export const DB_PATH = process.env.DB_PATH || './charon-binance.sqlite';
+
+// PostgreSQL (required)
+export const PG_HOST = process.env.PG_HOST || 'localhost';
+export const PG_PORT = Number(process.env.PG_PORT || 5432);
+export const PG_DATABASE = process.env.PG_DATABASE || 'endelif';
+export const PG_USER = process.env.PG_USER || 'postgres';
+export const PG_PASSWORD = process.env.PG_PASSWORD || '';
+export const PG_POOL_MAX = Number(process.env.PG_POOL_MAX || 20);
+export const USE_POSTGRES = true; // Always use PostgreSQL
 
 // Telegram
 export const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '';
@@ -49,6 +57,11 @@ export const JSON_HEADERS = {
 };
 
 export function validateConfig() {
+  // PostgreSQL is required
+  if (!PG_HOST) throw new Error('PG_HOST is required.');
+  if (!PG_USER) throw new Error('PG_USER is required.');
+  if (!PG_DATABASE) throw new Error('PG_DATABASE is required.');
+  
   if (!TELEGRAM_BOT_TOKEN) throw new Error('TELEGRAM_BOT_TOKEN is required.');
   if (!TELEGRAM_CHAT_ID) throw new Error('TELEGRAM_CHAT_ID is required.');
   if (TRADING_MODE === 'live' || TRADING_MODE === 'confirm') {

@@ -1,5 +1,4 @@
 import { validateConfig, APP_NAME, TRADING_MODE, SIGNAL_SCAN_MS, POSITION_CHECK_MS } from './config.js';
-import { initDb } from './db/connection.js';
 import { initPgDb } from './db/pg-connection.js';
 import { setupTelegram } from './telegram/commands.js';
 import { initBot, sendStartup, sendTelegram } from './telegram/send.js';
@@ -13,16 +12,9 @@ import { makeFailureTracker } from './utils.js';
 export async function startCharon() {
   validateConfig();
   
-  // Always initialize SQLite for compatibility
-  initDb();
-  
-  // Also initialize PostgreSQL if configured
-  if (process.env.USE_POSTGRES === 'true') {
-    await initPgDb();
-    console.log('[db] using PostgreSQL (with SQLite fallback)');
-  } else {
-    console.log('[db] using SQLite');
-  }
+  // Initialize PostgreSQL (required)
+  await initPgDb();
+  console.log('[db] using PostgreSQL');
 
   // Init Telegram bot (polling handled in commands.js)
   initBot();
