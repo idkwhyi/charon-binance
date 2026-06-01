@@ -104,8 +104,22 @@ export async function sendTradeIntent(intentId, candidate, decision) {
 export async function sendWatchAlert(symbol, direction, meta) {
   const dir   = direction;
   const emoji = dir === 'LONG' ? '👀🟢' : '👀🔴';
+  
+  // Determine what we're waiting for
+  let waitingForText = '⏳ <i>Waiting for price to reach entry zone</i>';
+  if (meta.waitingFor === 'entry_confirmation') {
+    waitingForText = `⏳ <i>In OB zone — waiting for entry confirmation</i>\n<i>Need: ${escapeHtml(meta.confirmationNeeded || 'MSS + optimal zone')}</i>`;
+  } else if (meta.waitingFor === 'price_in_ob_zone') {
+    const currentPrice = meta.currentPrice || meta.entry;
+    const distToOB = dir === 'LONG'
+      ? ((meta.obHigh - currentPrice) / currentPrice * 100).toFixed(2)
+      : ((currentPrice - meta.obLow) / currentPrice * 100).toFixed(2);
+    waitingForText = `⏳ <i>Waiting for price to retrace to OB zone (${distToOB}% away)</i>`;
+  }
+  
   const lines = [
     `${emoji} <b>Watch Alert — ${escapeHtml(symbol)}</b>`,
+    `<i>⚠️ Not a trade signal — monitor only</i>`,
     `Direction: <b>${dir}</b> | Trend: <b>${meta.trend}</b>`,
     ``,
     `📊 <b>Market Structure</b>`,
@@ -125,7 +139,7 @@ export async function sendWatchAlert(symbol, direction, meta) {
   lines.push(``);
   lines.push(`📐 <b>Entry Zone (Fib 70.5–78.6%)</b>`);
   lines.push(`70.5%: <b>${fmtUsd(meta.fib705Price)}</b> | 78.6%: <b>${fmtUsd(meta.fib79Price)}</b>`);
-  lines.push(`Current: <b>${fmtUsd(meta.entry)}</b>`);
+  lines.push(`Current: <b>${fmtUsd(meta.currentPrice || meta.entry)}</b>`);
 
   lines.push(``);
   lines.push(`🎯 <b>Projected Trade Levels</b>`);
@@ -133,8 +147,21 @@ export async function sendWatchAlert(symbol, direction, meta) {
   lines.push(`SL: <b>${fmtUsd(meta.stopLoss)}</b> <i>(below ${escapeHtml(meta.slAnchorLabel)}: ${fmtUsd(meta.slAnchorPrice)})</i>`);
   lines.push(`TP: <b>${fmtUsd(meta.takeProfit)}</b>`);
   lines.push(`R:R: <b>1:${Number(meta.rrRatio || 0).toFixed(2)}</b>`);
+  
+  // Entry confirmation status if available
+  if (meta.entryConfirmation) {
+    const conf = meta.entryConfirmation;
+    lines.push(``);
+    lines.push(`🎯 <b>Entry Confirmation</b>`);
+    lines.push(`Score: <b>${conf.score}/${conf.maxScore}</b> | Strength: <b>${conf.strength}</b>`);
+    if (conf.inOptimalZone) lines.push(`✅ In optimal zone (50% of OB)`);
+    if (conf.mssDetected) lines.push(`✅ Market Structure Shift detected`);
+    if (conf.rejectionCandle) lines.push(`✅ Rejection candle present`);
+    if (conf.properRetest) lines.push(`✅ Proper retest of OB`);
+  }
+  
   lines.push(``);
-  lines.push(`⏳ <i>Waiting for price to reach entry zone</i>`);
+  lines.push(waitingForText);
 
   await send(lines.join('\n'));
 }

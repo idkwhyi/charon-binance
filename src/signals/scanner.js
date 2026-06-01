@@ -82,14 +82,11 @@ export async function scanSignals() {
       const watchSignals = allSignals.filter(s => s.type === 'extreme_ob_watch');
       const triggered    = allSignals.filter(s => allowedSignals.includes(s.type));
 
-      // Send watch alerts (deduplicated per 30 min based on OB zone)
+      // Send watch alerts (deduplicated per 30 min based on symbol + direction only)
       for (const watchSig of watchSignals) {
-        // Create unique key based on symbol, direction, and OB zone
-        // This prevents duplicate alerts for the SAME OB zone
-        // but allows alerts for DIFFERENT OB zones on the same symbol
-        const obHigh = watchSig.meta?.obHigh?.toFixed(4) || '0';
-        const obLow = watchSig.meta?.obLow?.toFixed(4) || '0';
-        const watchKey = `${symbol}:${watchSig.direction}:${obLow}-${obHigh}`;
+        // Simplified deduplication: same symbol + direction within 30 min
+        // This prevents multiple alerts for the same setup even if OB zone shifts slightly
+        const watchKey = `${symbol}:${watchSig.direction}`;
         
         const lastSent = watchAlertSeen.get(watchKey) || 0;
         if (now() - lastSent > 30 * 60_000) {
