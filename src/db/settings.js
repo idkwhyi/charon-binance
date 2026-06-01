@@ -1,16 +1,53 @@
-import { db } from './connection.js';
+import { query as pgQuery } from './pg-connection.js';
 
-export function activeStrategy() {
-  const row = db.prepare("SELECT value FROM strategy_config WHERE key = 'active_strategy'").get();
-  const id = row?.value || 'scalp';
-  return strategyById(id);
+// Cache for frequently accessed settings
+let strategyCache = new Map();
+let cacheExpiry = 0;
+
+async function ensureStrategyCache() {
+  if (Date.now() < cacheExpiry) return;
+  
+  try {
+    const result = await pgQuery("SELECT key, value FROM strategy_config WHERE key LIKE 'strategy:%'");
+    strategyCache.clear();
+    for (const row of result.rows) {
+      const id = row.key.replace('strategy:', '');
+      strategyCache.set(id, JSON.parse(row.value));
+    }
+    cacheExpiry = Date.now() + 60000; // Cache for 1 minute
+  } catch (err) {
+    console.error('[settings] cache failed:', err.message);
+  }
 }
 
-export function strategyById(id) {
-  const row = db.prepare("SELECT value FROM strategy_config WHERE key = ?").get(`strategy:${id}`);
-  if (!row) return defaultStrategy(id);
-  try { return { ...defaultStrategy(id), ...JSON.parse(row.value), id }; }
-  catch { return defaultStrategy(id); }
+export async function activeStrategy() {
+  try {
+    const result = await pgQuery("SELECT value FROM strategy_config WHERE key = 'active_strategy'");
+    const id = result.rows[0]?.value || 'scalp';
+    return strategyById(id);
+  } catch {
+    return strategyById('scalp');
+  }
+}
+
+export async function strategyById(id) {
+  try {
+    await ensureStrategyCache();
+    if (strategyCache.has(id)) {
+      return { ...defaultStrategy(id), ...strategyCache.get(id), id };
+    }
+    
+    const result = await pgQuery("SELECT value FROM strategy_config WHERE key = $1", [`strategy:${id}`]);
+    if (result.rows.length === 0) return defaultStrategy(id);
+    
+    try {
+      return { ...defaultStrategy(id), ...JSON.parse(result.rows[0].value), id };
+    } catch {
+      return defaultStrategy(id);
+    }
+  } catch {
+    return defaultStrategy(id);
+  }
 }
 
 function defaultStrategy(id = 'scalp') {
@@ -51,38 +88,62 @@ function defaultStrategy(id = 'scalp') {
   return base;
 }
 
-export function setStrategySetting(stratId, key, value) {
-  const strat = strategyById(stratId);
+export async function setStrategySetting(stratId, key, value) {
+  const strat = await strategyById(stratId);
   let parsed = value;
   if (!isNaN(Number(value))) parsed = Number(value);
   else if (value === 'true') parsed = true;
   else if (value === 'false') parsed = false;
   strat[key] = parsed;
-  db.prepare("INSERT OR REPLACE INTO strategy_config (key, value) VALUES (?, ?)")
-    .run(`strategy:${stratId}`, JSON.stringify(strat));
+  
+  try {
+    await pgQuery(
+      "INSERT INTO strategy_config (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
+      [`strategy:${stratId}`, JSON.stringify(strat)]
+    );
+    strategyCache.delete(stratId);
+    cacheExpiry = 0; // Invalidate cache
+  } catch (err) {
+    console.error('[settings] setStrategySetting failed:', err.message);
+  }
 }
 
-export function setActiveSetting(key, value) {
-  db.prepare("INSERT OR REPLACE INTO strategy_config (key, value) VALUES (?, ?)").run(key, String(value));
+export async function setActiveSetting(key, value) {
+  try {
+    await pgQuery(
+      "INSERT INTO strategy_config (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
+      [key, String(value)]
+    );
+  } catch (err) {
+    console.error('[settings] setActiveSetting failed:', err.message);
+  }
 }
 
-export function getSetting(key, fallback = null) {
-  const row = db.prepare("SELECT value FROM strategy_config WHERE key = ?").get(key);
-  return row ? row.value : fallback;
+export async function getSetting(key, fallback = null) {
+  try {
+    const result = await pgQuery("SELECT value FROM strategy_config WHERE key = $1", [key]);
+    return result.rows[0]?.value || fallback;
+  } catch {
+    return fallback;
+  }
 }
 
-export function numSetting(key, fallback = 0) {
-  const v = getSetting(key);
+export async function numSetting(key, fallback = 0) {
+  const v = await getSetting(key);
   return v !== null ? Number(v) : fallback;
 }
 
-export function boolSetting(key, fallback = true) {
-  const v = getSetting(key);
+export async function boolSetting(key, fallback = true) {
+  const v = await getSetting(key);
   if (v === null) return fallback;
   return v === 'true' || v === '1';
 }
 
-export function allStrategyIds() {
-  const rows = db.prepare("SELECT key FROM strategy_config WHERE key LIKE 'strategy:%'").all();
-  return rows.map(r => r.key.replace('strategy:', ''));
+export async function allStrategyIds() {
+  try {
+    await ensureStrategyCache();
+    return Array.from(strategyCache.keys());
+  } catch {
+    return [];
+  }
 }

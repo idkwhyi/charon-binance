@@ -2,7 +2,7 @@ import axios from 'axios';
 import { ENABLE_LLM, LLM_API_KEY, LLM_BASE_URL, LLM_MODEL, LLM_TIMEOUT_MS } from '../config.js';
 import { now, strictJsonFromText } from '../utils.js';
 import { numSetting } from '../db/settings.js';
-import { db } from '../db/connection.js';
+import { query as pgQuery } from '../db/pg-connection.js';
 
 export function normalizeDecision(parsed, fallbackReason = '') {
   const rawVerdict = String(parsed?.verdict || '').toUpperCase();
@@ -33,12 +33,17 @@ function parseThinkingModelResponse(content) {
   return strictJsonFromText(stripped);
 }
 
-export function activeLessonsForPrompt(limit = 6) {
-  return db.prepare(`
-    SELECT lesson FROM learning_lessons
-    WHERE status = 'active'
-    ORDER BY id DESC LIMIT ?
-  `).all(limit).map(r => r.lesson);
+export async function activeLessonsForPrompt(limit = 6) {
+  try {
+    const result = await pgQuery(
+      "SELECT lesson FROM learning_lessons WHERE status = 'active' ORDER BY id DESC LIMIT $1",
+      [limit]
+    );
+    return result.rows.map(r => r.lesson);
+  } catch (err) {
+    console.error('[llm] activeLessonsForPrompt failed:', err.message);
+    return [];
+  }
 }
 
 export function compactCandidateForLlm(row) {
@@ -91,10 +96,12 @@ export async function decideCandidateBatch(rows, triggerCandidateId) {
     'Confidence is your conviction 0-100, not probability.',
   ].join(' ');
 
+  const recentLessons = await activeLessonsForPrompt();
+
   const user = {
     task: 'Pick the best futures trade candidate, or choose none.',
     instructions: systemInstructions,
-    recent_lessons: activeLessonsForPrompt(),
+    recent_lessons: recentLessons,
     output_schema: {
       verdict: 'BUY_LONG | BUY_SHORT | WATCH | PASS',
       selected_candidate_id: 'integer candidate_id when BUY_LONG or BUY_SHORT, otherwise null',

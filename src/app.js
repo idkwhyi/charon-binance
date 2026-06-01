@@ -30,10 +30,10 @@ export async function startCharon() {
   await warmupKlines();
 
   // Start WebSocket for real-time kline updates
-  startWebSocket();
+  await startWebSocket();
 
   // Send startup notification
-  const watchlist = getWatchlist();
+  const watchlist = await getWatchlist();
   await sendStartup(TRADING_MODE, watchlist);
 
   // Polling loops

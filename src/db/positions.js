@@ -1,26 +1,45 @@
-import { db } from './connection.js';
-import { pool } from './pg-connection.js';
+import { query as pgQuery } from './pg-connection.js';
 import { now, json } from '../utils.js';
 import { TRADING_MODE } from '../config.js';
 import { reserveMargin, releaseMargin, canOpenPosition } from './virtualBalance.js';
 
-// Check if we're using PostgreSQL
-const USE_POSTGRES = process.env.USE_POSTGRES === 'true';
+export async function positionById(id) {
+  try {
+    const result = await pgQuery("SELECT * FROM positions WHERE id = $1", [id]);
+    return result.rows[0] || null;
+  } catch (err) {
+    console.error('[positions] positionById failed:', err.message);
+    return null;
+  }
+}
+
+export async function openPositions() {
+  try {
+    const result = await pgQuery("SELECT * FROM positions WHERE status = 'open'");
+    return result.rows;
+  } catch (err) {
+    console.error('[positions] openPositions failed:', err.message);
+    return [];
+  }
+}
+
+export async function openPositionCount() {
+  try {
+    const result = await pgQuery("SELECT COUNT(*) as c FROM positions WHERE status = 'open'");
+    return parseInt(result.rows[0]?.c || 0);
+  } catch (err) {
+    console.error('[positions] openPositionCount failed:', err.message);
+    return 0;
+  }
+}
+
+export async function canOpenMorePositions(maxPositions = 3) {
+  const count = await openPositionCount();
+  return count < maxPositions;
+}
 
 export function tradingMode() {
   return TRADING_MODE;
-}
-
-export function openPositions() {
-  return db.prepare("SELECT * FROM positions WHERE status = 'open'").all();
-}
-
-export function openPositionCount() {
-  return db.prepare("SELECT COUNT(*) as c FROM positions WHERE status = 'open'").get().c;
-}
-
-export function canOpenMorePositions(maxPositions = 3) {
-  return openPositionCount() < maxPositions;
 }
 
 /**
@@ -53,131 +72,180 @@ function calcTpSlPercent(direction, entryPrice, stopLoss, takeProfit) {
 }
 
 export async function createDryRunPosition(candidateId, candidate, decision) {
-  const entryPrice = candidate.metrics.markPrice;
-  const obMeta = candidate.signals?.meta || {};
+  try {
+    const entryPrice = candidate.metrics.markPrice;
+    const obMeta = candidate.signals?.meta || {};
 
-  let tpPercent, slPercent;
-  if (obMeta.stopLoss && obMeta.takeProfit && entryPrice > 0) {
-    ({ tpPercent, slPercent } = calcTpSlPercent(
-      decision.direction, entryPrice, obMeta.stopLoss, obMeta.takeProfit
-    ));
-  } else {
-    tpPercent = decision.suggested_tp_percent;
-    slPercent = decision.suggested_sl_percent;
+    let tpPercent, slPercent;
+    if (obMeta.stopLoss && obMeta.takeProfit && entryPrice > 0) {
+      ({ tpPercent, slPercent } = calcTpSlPercent(
+        decision.direction, entryPrice, obMeta.stopLoss, obMeta.takeProfit
+      ));
+    } else {
+      tpPercent = decision.suggested_tp_percent;
+      slPercent = decision.suggested_sl_percent;
+    }
+
+    // Calculate margin requirement for dry_run
+    const marginRequired = candidate.entryUsdt || 0;
+    
+    // Check virtual balance before opening position
+    if (!(await canOpenPosition(marginRequired))) {
+      throw new Error(`Insufficient virtual balance for ${candidate.symbol} ${decision.direction} position (${marginRequired.toFixed(2)} USDT required)`);
+    }
+    
+    // Reserve margin in virtual balance
+    await reserveMargin(marginRequired);
+
+    // Create position in PostgreSQL
+    const result = await pgQuery(`
+      INSERT INTO positions (
+        candidate_id, symbol, direction, leverage, margin_type,
+        entry_price, entry_usdt, notional_usdt,
+        tp_percent, sl_percent, trailing_enabled, trailing_percent,
+        high_water_price, low_water_price, liq_price,
+        status, execution_mode, opened_at_ms, strategy_id
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,'open','dry_run',$16,$17)
+      RETURNING id
+    `, [
+      candidateId, candidate.symbol, decision.direction,
+      candidate.leverage || 1, candidate.marginType || 'ISOLATED',
+      entryPrice, candidate.entryUsdt, candidate.entryUsdt,
+      tpPercent, slPercent, false, 0,
+      entryPrice, entryPrice,
+      candidate.metrics.liqPrice || null,
+      now(), candidate.strategyId,
+    ]);
+    
+    console.log(`[dry_run] Reserved ${marginRequired.toFixed(2)} USDT margin for position ${result.rows[0]?.id}`);
+    return result.rows[0]?.id;
+  } catch (err) {
+    console.error('[positions] createDryRunPosition failed:', err.message);
+    throw err;
   }
-
-  // Calculate margin requirement for dry_run
-  const marginRequired = candidate.entryUsdt || 0;
-  
-  // Check virtual balance before opening position
-  if (!(await canOpenPosition(marginRequired))) {
-    throw new Error(`Insufficient virtual balance for ${candidate.symbol} ${decision.direction} position (${marginRequired.toFixed(2)} USDT required)`);
-  }
-  
-  // Reserve margin in virtual balance
-  await reserveMargin(marginRequired);
-
-  // Create position in SQLite (for compatibility)
-  const result = db.prepare(`
-    INSERT INTO positions (
-      candidate_id, symbol, direction, leverage, margin_type,
-      entry_price, entry_usdt, notional_usdt,
-      tp_percent, sl_percent, trailing_enabled, trailing_percent,
-      high_water_price, low_water_price, liq_price,
-      status, execution_mode, opened_at_ms, strategy_id
-    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'open','dry_run',?,?)
-  `).run(
-    candidateId, candidate.symbol, decision.direction,
-    candidate.leverage || 1, candidate.marginType || 'ISOLATED',
-    entryPrice, candidate.entryUsdt, candidate.entryUsdt,
-    tpPercent, slPercent, 0, 0,
-    entryPrice, entryPrice,
-    candidate.metrics.liqPrice || null,
-    now(), candidate.strategyId,
-  );
-  
-  console.log(`[dry_run] Reserved ${marginRequired.toFixed(2)} USDT margin for position ${result.lastInsertRowid}`);
-  return result.lastInsertRowid;
 }
 
-export function createLivePosition(candidateId, candidate, decision, orderId) {
-  const entryPrice = candidate.metrics.markPrice;
-  const obMeta = candidate.signals?.meta || {};
+export async function createLivePosition(candidateId, candidate, decision, orderId) {
+  try {
+    const entryPrice = candidate.metrics.markPrice;
+    const obMeta = candidate.signals?.meta || {};
 
-  let tpPercent, slPercent;
-  if (obMeta.stopLoss && obMeta.takeProfit && entryPrice > 0) {
-    ({ tpPercent, slPercent } = calcTpSlPercent(
-      decision.direction, entryPrice, obMeta.stopLoss, obMeta.takeProfit
-    ));
-  } else {
-    tpPercent = decision.suggested_tp_percent;
-    slPercent = decision.suggested_sl_percent;
+    let tpPercent, slPercent;
+    if (obMeta.stopLoss && obMeta.takeProfit && entryPrice > 0) {
+      ({ tpPercent, slPercent } = calcTpSlPercent(
+        decision.direction, entryPrice, obMeta.stopLoss, obMeta.takeProfit
+      ));
+    } else {
+      tpPercent = decision.suggested_tp_percent;
+      slPercent = decision.suggested_sl_percent;
+    }
+
+    const result = await pgQuery(`
+      INSERT INTO positions (
+        candidate_id, symbol, direction, leverage, margin_type,
+        entry_price, entry_usdt, notional_usdt,
+        tp_percent, sl_percent, trailing_enabled, trailing_percent,
+        high_water_price, low_water_price, liq_price,
+        status, execution_mode, binance_order_id, opened_at_ms, strategy_id
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,'open','live',$16,$17,$18)
+      RETURNING id
+    `, [
+      candidateId, candidate.symbol, decision.direction,
+      candidate.leverage || 1, candidate.marginType || 'ISOLATED',
+      entryPrice, candidate.entryUsdt, candidate.entryUsdt,
+      tpPercent, slPercent, false, 0,
+      entryPrice, entryPrice,
+      candidate.metrics.liqPrice || null,
+      orderId || null, now(), candidate.strategyId,
+    ]);
+    return result.rows[0]?.id;
+  } catch (err) {
+    console.error('[positions] createLivePosition failed:', err.message);
+    throw err;
   }
-
-  const result = db.prepare(`
-    INSERT INTO positions (
-      candidate_id, symbol, direction, leverage, margin_type,
-      entry_price, entry_usdt, notional_usdt,
-      tp_percent, sl_percent, trailing_enabled, trailing_percent,
-      high_water_price, low_water_price, liq_price,
-      status, execution_mode, binance_order_id, opened_at_ms, strategy_id
-    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'open','live',?,?,?)
-  `).run(
-    candidateId, candidate.symbol, decision.direction,
-    candidate.leverage || 1, candidate.marginType || 'ISOLATED',
-    entryPrice, candidate.entryUsdt, candidate.entryUsdt,
-    tpPercent, slPercent, 0, 0,
-    entryPrice, entryPrice,
-    candidate.metrics.liqPrice || null,
-    orderId || null, now(), candidate.strategyId,
-  );
-  return result.lastInsertRowid;
 }
 
 export async function closePosition(id, exitPrice, exitReason, pnlPercent, pnlUsdt, signature = null) {
-  // Get position info before closing
-  const position = db.prepare("SELECT * FROM positions WHERE id = ?").get(id);
-  
-  if (!position) {
-    throw new Error(`Position ${id} not found`);
+  try {
+    // Get position info before closing
+    const posResult = await pgQuery("SELECT * FROM positions WHERE id = $1", [id]);
+    
+    if (posResult.rows.length === 0) {
+      throw new Error(`Position ${id} not found`);
+    }
+    
+    const position = posResult.rows[0];
+    
+    await pgQuery(`
+      UPDATE positions
+      SET status = 'closed', closed_at_ms = $1, exit_price = $2, exit_reason = $3,
+          pnl_percent = $4, pnl_usdt = $5, binance_order_id = COALESCE($6, binance_order_id)
+      WHERE id = $7
+    `, [now(), exitPrice, exitReason, pnlPercent, pnlUsdt, signature, id]);
+    
+    // Release margin for dry_run positions
+    if (position.execution_mode === 'dry_run') {
+      const marginUsed = position.entry_usdt || 0;
+      await releaseMargin(marginUsed, pnlUsdt || 0);
+      console.log(`[dry_run] Released ${marginUsed.toFixed(2)} USDT margin, PnL: ${(pnlUsdt || 0).toFixed(2)} USDT`);
+    }
+  } catch (err) {
+    console.error('[positions] closePosition failed:', err.message);
+    throw err;
   }
-  
-  db.prepare(`
-    UPDATE positions
-    SET status = 'closed', closed_at_ms = ?, exit_price = ?, exit_reason = ?,
-        pnl_percent = ?, pnl_usdt = ?, binance_order_id = COALESCE(?, binance_order_id)
-    WHERE id = ?
-  `).run(now(), exitPrice, exitReason, pnlPercent, pnlUsdt, signature, id);
-  
-  // Release margin for dry_run positions
-  if (position.execution_mode === 'dry_run') {
-    const marginUsed = position.entry_usdt || 0;
-    await releaseMargin(marginUsed, pnlUsdt || 0);
-    console.log(`[dry_run] Released ${marginUsed.toFixed(2)} USDT margin, PnL: ${(pnlUsdt || 0).toFixed(2)} USDT`);
+}
+
+export async function updatePositionWatermarks(id, highWater, lowWater, trailingArmed) {
+  try {
+    await pgQuery(`
+      UPDATE positions SET high_water_price = $1, low_water_price = $2, trailing_armed = $3 WHERE id = $4
+    `, [highWater, lowWater, trailingArmed ? true : false, id]);
+  } catch (err) {
+    console.error('[positions] updatePositionWatermarks failed:', err.message);
   }
 }
 
-export function updatePositionWatermarks(id, highWater, lowWater, trailingArmed) {
-  db.prepare(`
-    UPDATE positions SET high_water_price = ?, low_water_price = ?, trailing_armed = ? WHERE id = ?
-  `).run(highWater, lowWater, trailingArmed ? 1 : 0, id);
+export async function logTrade(positionId, symbol, direction, side, price, pnlPercent, pnlUsdt, reason, payload) {
+  try {
+    await pgQuery(`
+      INSERT INTO trades (position_id, symbol, direction, side, at_ms, price, pnl_percent, pnl_usdt, reason, payload_json)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb)
+    `, [positionId, symbol, direction, side, now(), price, pnlPercent, pnlUsdt, reason, json(payload)]);
+  } catch (err) {
+    console.error('[positions] logTrade failed:', err.message);
+  }
 }
 
-export function logTrade(positionId, symbol, direction, side, price, pnlPercent, pnlUsdt, reason, payload) {
-  db.prepare(`
-    INSERT INTO trades (position_id, symbol, direction, side, at_ms, price, pnl_percent, pnl_usdt, reason, payload_json)
-    VALUES (?,?,?,?,?,?,?,?,?,?)
-  `).run(positionId, symbol, direction, side, now(), price, pnlPercent, pnlUsdt, reason, json(payload));
+export async function pnlSummary() {
+  try {
+    const result = await pgQuery(`
+      SELECT
+        COUNT(*) as total,
+        SUM(CASE WHEN status = 'closed' AND pnl_usdt > 0 THEN 1 ELSE 0 END) as wins,
+        SUM(CASE WHEN status = 'closed' AND pnl_usdt <= 0 THEN 1 ELSE 0 END) as losses,
+        SUM(CASE WHEN status = 'closed' THEN pnl_usdt ELSE 0 END) as total_pnl_usdt,
+        COUNT(CASE WHEN status = 'open' THEN 1 END) as open_count
+      FROM positions
+    `);
+    return result.rows[0] || {};
+  } catch (err) {
+    console.error('[positions] pnlSummary failed:', err.message);
+    return {};
+  }
 }
 
-export function pnlSummary() {
-  return db.prepare(`
-    SELECT
-      COUNT(*) as total,
-      SUM(CASE WHEN status = 'closed' AND pnl_usdt > 0 THEN 1 ELSE 0 END) as wins,
-      SUM(CASE WHEN status = 'closed' AND pnl_usdt <= 0 THEN 1 ELSE 0 END) as losses,
-      SUM(CASE WHEN status = 'closed' THEN pnl_usdt ELSE 0 END) as total_pnl_usdt,
-      COUNT(CASE WHEN status = 'open' THEN 1 END) as open_count
-    FROM positions
-  `).get();
+export async function recentClosedPositions(limit = 10) {
+  try {
+    const result = await pgQuery(`
+      SELECT pnl_usdt, pnl_percent, symbol, direction, exit_reason, closed_at_ms
+      FROM positions 
+      WHERE execution_mode = 'dry_run' AND status = 'closed'
+      ORDER BY closed_at_ms DESC 
+      LIMIT $1
+    `, [limit]);
+    return result.rows;
+  } catch (err) {
+    console.error('[positions] recentClosedPositions failed:', err.message);
+    return [];
+  }
 }

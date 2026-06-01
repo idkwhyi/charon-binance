@@ -25,7 +25,7 @@ export function setCandidateHandler(fn) {
  * Fetch initial klines for all watchlist symbols (1h and 15m).
  */
 export async function warmupKlines() {
-  const watchlist = getWatchlist();
+  const watchlist = await getWatchlist();
   console.log(`[scanner] warming up klines for ${watchlist.length} symbols (1h + 15m)...`);
   for (const symbol of watchlist) {
     try {
@@ -43,9 +43,9 @@ export async function warmupKlines() {
  * Scan all symbols in watchlist using cached 1h + 15m klines + live enrichment.
  */
 export async function scanSignals() {
-  const strat = activeStrategy();
+  const strat = await activeStrategy();
   const allowedSignals = (strat.signal_types || '').split(',').map(s => s.trim());
-  const watchlist = getWatchlist();
+  const watchlist = await getWatchlist();
 
   console.log(`[scanner] scan start | strategy=${strat.id} | allowed=${allowedSignals.join(',')} | symbols=${watchlist.length}`);
 
@@ -137,9 +137,9 @@ export async function scanSignals() {
 /**
  * Start Binance Futures WebSocket — 1h and 15m kline streams.
  */
-export function startWebSocket() {
-  function connect() {
-    const watchlist = getWatchlist();
+export async function startWebSocket() {
+  async function connect() {
+    const watchlist = await getWatchlist();
     const streams = [];
     
     // Add both 1h and 15m streams for each symbol

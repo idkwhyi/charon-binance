@@ -59,8 +59,8 @@ export async function refreshTopGainers(notify = true) {
     const movers = await fetchTopMovers();
     if (!movers.length) return;
 
-    const before = getWatchlist();
-    const after  = mergeAutoSymbols(movers, 50);
+    const before = await getWatchlist();
+    const after  = await mergeAutoSymbols(movers, 50);
 
     const added   = after.filter(s => !before.includes(s));
     const removed = before.filter(s => !after.includes(s));

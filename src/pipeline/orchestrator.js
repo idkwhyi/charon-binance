@@ -20,17 +20,18 @@ export async function processSignalCandidate(rawSignal) {
   if (seenSignals.has(key)) return;
   seenSignals.set(key, now());
 
-  const strat = activeStrategy();
-  if (!canOpenMorePositions(strat.max_open_positions || 3)) {
-    console.log(`[agent] max positions (${openPositionCount()}/${strat.max_open_positions}), skipping ${rawSignal.symbol}`);
+  const strat = await activeStrategy();
+  const positionCount = await openPositionCount();
+  if (!await canOpenMorePositions(strat.max_open_positions || 3)) {
+    console.log(`[agent] max positions (${positionCount}/${strat.max_open_positions}), skipping ${rawSignal.symbol}`);
     return;
   }
 
   // Build & filter candidate
-  const candidate = buildCandidate(rawSignal);
-  candidate.filters = filterCandidate(candidate);
+  const candidate = await buildCandidate(rawSignal);
+  candidate.filters = await filterCandidate(candidate);
 
-  const candidateId = upsertCandidate(candidate);
+  const candidateId = await upsertCandidate(candidate);
   if (!candidate.filters.passed) {
     console.log(`[candidate] filtered ${candidate.symbol} (${candidate.signalType}): ${candidate.filters.failures.join('; ')}`);
     return;
@@ -42,7 +43,7 @@ export async function processSignalCandidate(rawSignal) {
 
   if (!strat.use_llm) {
     // Rule-based: auto-approve
-    const selfRow = candidateById(candidateId);
+    const selfRow = await candidateById(candidateId);
     // Use OB-derived TP/SL if available, otherwise fall back to strategy defaults
     const tpPct = candidate.tpPercentOverride ?? strat.tp_percent ?? 2;
     const slPct = candidate.slPercentOverride ?? strat.sl_percent ?? -1.5;
@@ -61,16 +62,16 @@ export async function processSignalCandidate(rawSignal) {
     };
     batchId = null;
   } else {
-    const rows = recentEligibleCandidates(numSetting('llm_candidate_pick_count', 10));
+    const rows = await recentEligibleCandidates(await numSetting('llm_candidate_pick_count', 10));
     batchDecision = await decideCandidateBatch(rows, candidateId);
-    batchId = storeBatchDecision(candidateId, rows, batchDecision);
+    batchId = await storeBatchDecision(candidateId, rows, batchDecision);
   }
 
   const isBuy = batchDecision.verdict === 'BUY_LONG' || batchDecision.verdict === 'BUY_SHORT';
   const selectedRow = batchDecision.selected_row;
 
-  storeDecision(candidateId, candidate, batchDecision);
-  updateCandidateStatus(candidateId, isBuy ? 'buy' : batchDecision.verdict.toLowerCase());
+  await storeDecision(candidateId, candidate, batchDecision);
+  await updateCandidateStatus(candidateId, isBuy ? 'buy' : batchDecision.verdict.toLowerCase());
 
   // Notify Telegram when LLM passes/watches a valid candidate
   if (!isBuy && strat.use_llm) {
@@ -89,8 +90,8 @@ export async function processSignalCandidate(rawSignal) {
     await sendTelegram(lines.join('\n'));
   }
 
-  if (isBuy && selectedRow && boolSetting('agent_enabled', 'true') !== false) {
-    const minConf = numSetting('llm_min_confidence', strat.llm_min_confidence ?? 70);
+  if (isBuy && selectedRow && await boolSetting('agent_enabled', 'true') !== false) {
+    const minConf = await numSetting('llm_min_confidence', strat.llm_min_confidence ?? 70);
     if (batchDecision.confidence < minConf) {
       console.log(`[agent] confidence ${batchDecision.confidence} < threshold ${minConf}, skipping`);
       const meta = candidate.signals?.meta || {};
@@ -119,7 +120,7 @@ async function handleApprovedBuy(selectedRow, decision, batchId, triggerCandidat
   }
 
   if (mode === 'confirm') {
-    const intentId = createTradeIntent(selectedRow.id, rowCandidate, decision, mode, 'pending_confirmation');
+    const intentId = await createTradeIntent(selectedRow.id, rowCandidate, decision, mode, 'pending_confirmation');
     console.log(`[confirm] intent #${intentId} created for ${rowCandidate.symbol} ${decision.direction}`);
     await sendTradeIntent(intentId, rowCandidate, decision);
     return;
@@ -129,7 +130,7 @@ async function handleApprovedBuy(selectedRow, decision, batchId, triggerCandidat
   try {
     const { orderId, liqPrice } = await executeFuturesBuy(rowCandidate, decision);
     rowCandidate.metrics.liqPrice = liqPrice;
-    const positionId = createLivePosition(selectedRow.id, rowCandidate, decision, orderId);
+    const positionId = await createLivePosition(selectedRow.id, rowCandidate, decision, orderId);
     console.log(`[live] opened position #${positionId} ${rowCandidate.symbol} ${decision.direction} ${rowCandidate.leverage}x order=${orderId}`);
     await sendPositionOpen(positionId);
   } catch (err) {

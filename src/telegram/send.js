@@ -2,7 +2,7 @@ import TelegramBot from 'node-telegram-bot-api';
 import { TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID } from '../config.js';
 import { candidateSummary, positionSummary } from './format.js';
 import { escapeHtml, dirEmoji, fmtUsd, fmtPct } from '../format.js';
-import { db } from '../db/connection.js';
+import { positionById } from '../db/positions.js';
 
 let bot = null;
 
@@ -37,7 +37,7 @@ export async function sendStartup(mode, watchlist) {
 }
 
 export async function sendPositionOpen(positionId) {
-  const row = db.prepare("SELECT * FROM positions WHERE id = ?").get(positionId);
+  const row = await positionById(positionId);
   if (!row) return;
 
   const entryPrice = Number(row.entry_price);

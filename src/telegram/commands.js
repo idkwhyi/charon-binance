@@ -3,18 +3,18 @@ import {
   TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, TRADING_MODE,
 } from '../config.js';
 import { activeStrategy, allStrategyIds, setStrategySetting, setActiveSetting } from '../db/settings.js';
-import { openPositions, pnlSummary } from '../db/positions.js';
+import { openPositions, pnlSummary, recentClosedPositions } from '../db/positions.js';
 import { getTradeIntent, updateTradeIntentStatus } from '../db/decisions.js';
 import { createLivePosition } from '../db/positions.js';
 import { executeFuturesBuy } from '../execution/futuresExecutor.js';
 import { openPositionsList, candidateSummary } from './format.js';
 import { sendTelegram, sendPositionOpen } from './send.js';
 import { fmtUsd, fmtPct, escapeHtml } from '../format.js';
-import { db } from '../db/connection.js';
 import { getWatchlist, addToWatchlist, removeFromWatchlist, getPinnedSymbols } from '../db/watchlist.js';
 import { refreshTopGainers } from '../enrichment/topGainers.js';
 import { reconnectWebSocket, warmupKlines } from '../signals/scanner.js';
 import { getVirtualBalanceStats, getBalanceSummary, resetVirtualBalance, initializeVirtualBalance } from '../db/virtualBalance.js';
+import { addLesson, getActiveLessons } from '../db/learning.js';
 
 let bot = null;
 
@@ -331,15 +331,14 @@ async function handleDebug(msg, args) {
 }
 
 async function handleLesson(msg, args) {
-  if (!args.length) return reply(msg, 'Usage: /lesson &lt;text&gt;');
+  if (!args.length) return reply(msg, 'Usage: /lesson <text>');
   const lesson = args.join(' ');
-  db.prepare("INSERT INTO learning_lessons (lesson, status, created_at_ms) VALUES (?, 'active', ?)")
-    .run(lesson, Date.now());
+  await addLesson(lesson);
   await reply(msg, `✅ Lesson added: <i>${escapeHtml(lesson)}</i>`);
 }
 
 async function handleLessons(msg) {
-  const rows = db.prepare("SELECT id, lesson FROM learning_lessons WHERE status = 'active' ORDER BY id DESC LIMIT 10").all();
+  const rows = await getActiveLessons(10);
   if (!rows.length) return reply(msg, '📚 No active lessons.');
   await reply(msg, `📚 <b>Active Lessons</b>\n${rows.map(r => `• [${r.id}] <i>${escapeHtml(r.lesson)}</i>`).join('\n')}`);
 }
@@ -408,20 +407,14 @@ async function handleBacktest(msg) {
     const summary = await getBalanceSummary();
     
     // Get recent closed positions for additional stats
-    const recentTrades = db.prepare(`
-      SELECT pnl_usdt, pnl_percent, symbol, direction, exit_reason, closed_at_ms
-      FROM positions 
-      WHERE execution_mode = 'dry_run' AND status = 'closed'
-      ORDER BY closed_at_ms DESC 
-      LIMIT 10
-    `).all();
+    const recentTrades = await recentClosedPositions(10);
 
     const avgWin = stats.winning_trades > 0 
-      ? recentTrades.filter(t => t.pnl_usdt > 0).reduce((sum, t) => sum + t.pnl_usdt, 0) / stats.winning_trades
+      ? recentTrades.filter(t => t.pnl_usdt > 0).reduce((sum, t) => sum + Number(t.pnl_usdt), 0) / stats.winning_trades
       : 0;
       
     const avgLoss = stats.losing_trades > 0
-      ? recentTrades.filter(t => t.pnl_usdt <= 0).reduce((sum, t) => sum + t.pnl_usdt, 0) / stats.losing_trades
+      ? recentTrades.filter(t => t.pnl_usdt <= 0).reduce((sum, t) => sum + Number(t.pnl_usdt), 0) / stats.losing_trades
       : 0;
 
     const profitFactor = (avgWin * stats.winning_trades) / Math.abs(avgLoss * stats.losing_trades) || 0;
@@ -448,7 +441,7 @@ async function handleBacktest(msg) {
       ``,
       `📋 <b>Recent Trades</b>`,
       ...recentTrades.slice(0, 5).map(t => 
-        `• ${t.symbol} ${t.direction} → ${t.pnl_usdt >= 0 ? '+' : ''}${t.pnl_usdt.toFixed(2)} USDT (${t.exit_reason})`
+        `• ${t.symbol} ${t.direction} → ${Number(t.pnl_usdt) >= 0 ? '+' : ''}${Number(t.pnl_usdt).toFixed(2)} USDT (${t.exit_reason})`
       ),
     ].join('\n'));
   } catch (err) {

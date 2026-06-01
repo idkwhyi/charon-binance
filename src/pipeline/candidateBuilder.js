@@ -5,8 +5,8 @@ import { TRADE_AMOUNT_USDT, MARGIN_TYPE } from '../config.js';
 /**
  * Build a structured candidate object from a raw signal event.
  */
-export function buildCandidate(signal) {
-  const strat = activeStrategy();
+export async function buildCandidate(signal) {
+  const strat = await activeStrategy();
   const ticker = signal.ticker || {};
   const markPrice = firstPositive(ticker.lastPrice, ticker.price, 0);
   const volume24h = firstPositive(ticker.quoteVolume, 0);
@@ -69,8 +69,8 @@ export function buildCandidate(signal) {
  * Apply strategy filters to a candidate.
  * Returns { passed: boolean, failures: string[] }
  */
-export function filterCandidate(candidate) {
-  const strat = activeStrategy();
+export async function filterCandidate(candidate) {
+  const strat = await activeStrategy();
   const failures = [];
 
   const { markPrice, volume24hUsdt, openInterestUsdt, fundingRate, lastKlineVolume } = candidate.metrics;
