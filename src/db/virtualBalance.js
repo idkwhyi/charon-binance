@@ -81,7 +81,8 @@ export async function getVirtualBalance() {
       unrealized_pnl: Number(result.unrealized_pnl),
       total_realized_pnl: Number(result.total_realized_pnl),
       max_drawdown_percent: Number(result.max_drawdown_percent),
-      peak_balance: Number(result.peak_balance)
+      peak_balance: Number(result.peak_balance),
+      starting_balance: Number(result.starting_balance || result.balance_usdt)
     };
   }
   
@@ -94,19 +95,19 @@ export async function getVirtualBalance() {
 export async function initializeVirtualBalance(initialBalance = 1000) {
   const pgQuery = `
     INSERT INTO virtual_balance (
-      balance_usdt, available_balance, execution_mode
-    ) VALUES ($1, $2, 'dry_run')
+      balance_usdt, available_balance, starting_balance, execution_mode
+    ) VALUES ($1, $2, $3, 'dry_run')
     RETURNING *
   `;
   
   const sqliteQuery = `
     INSERT INTO virtual_balance (
-      balance_usdt, available_balance, execution_mode
-    ) VALUES (?, ?, 'dry_run')
+      balance_usdt, available_balance, starting_balance, execution_mode
+    ) VALUES (?, ?, ?, 'dry_run')
   `;
   
   if (USE_POSTGRES) {
-    const result = await pool.query(pgQuery, [initialBalance, initialBalance]);
+    const result = await pool.query(pgQuery, [initialBalance, initialBalance, initialBalance]);
     const row = result.rows[0];
     // Convert PostgreSQL decimal strings to numbers
     return {
@@ -117,10 +118,11 @@ export async function initializeVirtualBalance(initialBalance = 1000) {
       unrealized_pnl: Number(row.unrealized_pnl),
       total_realized_pnl: Number(row.total_realized_pnl),
       max_drawdown_percent: Number(row.max_drawdown_percent),
-      peak_balance: Number(row.peak_balance)
+      peak_balance: Number(row.peak_balance),
+      starting_balance: Number(row.starting_balance)
     };
   } else {
-    const result = db.prepare(sqliteQuery).run(initialBalance, initialBalance, 'dry_run');
+    const result = db.prepare(sqliteQuery).run(initialBalance, initialBalance, initialBalance, 'dry_run');
     return db.prepare("SELECT * FROM virtual_balance WHERE id = ?").get(result.lastInsertRowid);
   }
 }
@@ -142,6 +144,7 @@ export async function resetVirtualBalance(initialBalance = 1000) {
       losing_trades = 0,
       max_drawdown_percent = 0,
       peak_balance = $3,
+      starting_balance = $4,
       updated_at = CURRENT_TIMESTAMP
     WHERE execution_mode = 'dry_run'
     RETURNING *
@@ -160,12 +163,13 @@ export async function resetVirtualBalance(initialBalance = 1000) {
       losing_trades = 0,
       max_drawdown_percent = 0,
       peak_balance = ?,
+      starting_balance = ?,
       updated_at = datetime('now')
     WHERE execution_mode = 'dry_run'
   `;
   
   if (USE_POSTGRES) {
-    const result = await pool.query(pgQuery, [initialBalance, initialBalance, initialBalance]);
+    const result = await pool.query(pgQuery, [initialBalance, initialBalance, initialBalance, initialBalance]);
     if (result.rows.length > 0) {
       const row = result.rows[0];
       // Convert PostgreSQL decimal strings to numbers
@@ -177,11 +181,12 @@ export async function resetVirtualBalance(initialBalance = 1000) {
         unrealized_pnl: Number(row.unrealized_pnl),
         total_realized_pnl: Number(row.total_realized_pnl),
         max_drawdown_percent: Number(row.max_drawdown_percent),
-        peak_balance: Number(row.peak_balance)
+        peak_balance: Number(row.peak_balance),
+        starting_balance: Number(row.starting_balance)
       };
     }
   } else {
-    db.prepare(sqliteQuery).run(initialBalance, initialBalance, initialBalance);
+    db.prepare(sqliteQuery).run(initialBalance, initialBalance, initialBalance, initialBalance);
   }
   
   return await getVirtualBalance();
@@ -345,6 +350,7 @@ export async function getVirtualBalanceStats() {
   const unrealizedPnl = Number(balance.unrealized_pnl || 0);
   const maxDrawdownPercent = Number(balance.max_drawdown_percent || 0);
   const peakBalance = Number(balance.peak_balance || 1000);
+  const startingBalance = Number(balance.starting_balance || balance.balance_usdt || 1000);
   
   const winRate = totalTrades > 0 
     ? (winningTrades / totalTrades * 100)
@@ -358,11 +364,15 @@ export async function getVirtualBalanceStats() {
     ? (totalRealizedPnl / (totalTrades - winningTrades))
     : 0;
     
-  const totalReturn = ((balanceUsdt - 1000) / 1000 * 100);
+  // Calculate total return based on actual starting balance
+  const totalReturn = startingBalance > 0 
+    ? ((balanceUsdt - startingBalance) / startingBalance * 100)
+    : 0;
   
   return {
     ...balance,
     balance_usdt: balanceUsdt,
+    starting_balance: startingBalance,
     winRate: winRate,
     avgWin: avgWin,
     avgLoss: avgLoss,

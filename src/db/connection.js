@@ -137,6 +137,7 @@ export function initDb() {
       losing_trades INTEGER NOT NULL DEFAULT 0,
       max_drawdown_percent REAL NOT NULL DEFAULT 0.00,
       peak_balance REAL NOT NULL DEFAULT 1000.00,
+      starting_balance REAL NOT NULL DEFAULT 1000.00,
       execution_mode TEXT NOT NULL DEFAULT 'dry_run',
       created_at TEXT DEFAULT (datetime('now')),
       updated_at TEXT DEFAULT (datetime('now'))
@@ -154,8 +155,8 @@ export function initDb() {
   const virtualBalance = db.prepare("SELECT * FROM virtual_balance WHERE execution_mode = 'dry_run'").get();
   if (!virtualBalance) {
     db.prepare(`
-      INSERT INTO virtual_balance (balance_usdt, available_balance, execution_mode) 
-      VALUES (1000.00, 1000.00, 'dry_run')
+      INSERT INTO virtual_balance (balance_usdt, available_balance, starting_balance, execution_mode) 
+      VALUES (1000.00, 1000.00, 1000.00, 'dry_run')
     `).run();
     console.log('[db] initialized virtual balance: 1000 USDT');
   }

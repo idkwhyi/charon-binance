@@ -430,7 +430,7 @@ async function handleBacktest(msg) {
       `📊 <b>Backtest Performance Summary</b>`,
       ``,
       `💰 <b>Balance Overview</b>`,
-      `Starting: <b>1000.00 USDT</b>`,
+      `Starting: <b>${stats.starting_balance.toFixed(2)} USDT</b>`,
       `Current: <b>${summary.balance}</b>`,
       `Peak: <b>${stats.peak_balance.toFixed(2)} USDT</b>`,
       `Total Return: <b>${summary.total_return}</b>`,
