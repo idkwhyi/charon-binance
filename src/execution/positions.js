@@ -117,7 +117,7 @@ export async function refreshPosition(position, autoExit = true) {
  * Monitor all open positions.
  */
 export async function monitorPositions() {
-  const positions = openPositions();
+  const positions = await openPositions();
   for (const pos of positions) {
     await refreshPosition(pos).catch(err => {
       console.log(`[position] #${pos.id} monitor error: ${err.message}`);

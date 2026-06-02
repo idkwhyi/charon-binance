@@ -151,12 +151,12 @@ async function handleStratset(msg, args) {
 }
 
 async function handlePositions(msg) {
-  const positions = openPositions();
+  const positions = await openPositions();
   await reply(msg, openPositionsList(positions));
 }
 
 async function handlePnl(msg) {
-  const summary = pnlSummary();
+  const summary = await pnlSummary();
   const winRate = summary.total > 0 ? ((summary.wins / (summary.wins + summary.losses)) * 100).toFixed(1) : 'N/A';
   await reply(msg, [
     `📈 <b>PnL Summary</b>`,
