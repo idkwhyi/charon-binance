@@ -14,7 +14,7 @@ import { getWatchlist, addToWatchlist, removeFromWatchlist, getPinnedSymbols } f
 import { refreshTopGainers } from '../enrichment/topGainers.js';
 import { reconnectWebSocket, warmupKlines } from '../signals/scanner.js';
 import { getVirtualBalanceStats, getBalanceSummary, resetVirtualBalance, initializeVirtualBalance } from '../db/virtualBalance.js';
-import { addLesson, getActiveLessons } from '../db/learning.js';
+import { addLesson, getActiveLessons, confidenceCalibration } from '../db/learning.js';
 
 let bot = null;
 
@@ -45,6 +45,7 @@ export function setupTelegram() {
       else if (cmd === '/balance') await handleBalance(msg);
       else if (cmd === '/reset_balance') await handleResetBalance(msg, args);
       else if (cmd === '/backtest') await handleBacktest(msg);
+      else if (cmd === '/stats') await handleStats(msg, args);
     } catch (err) {
       await reply(msg, `❌ Error: ${escapeHtml(err.message)}`);
     }
@@ -94,6 +95,7 @@ async function handleHelp(msg) {
     `/balance — Show virtual balance (dry_run mode)`,
     `/reset_balance [amount] — Reset virtual balance (default: 1000 USDT)`,
     `/backtest — Show backtest performance summary`,
+    `/stats confidence — LLM confidence vs actual win rate`,
   ].join('\n'));
 }
 
@@ -446,6 +448,33 @@ async function handleBacktest(msg) {
     ].join('\n'));
   } catch (err) {
     await reply(msg, `❌ Error getting backtest summary: ${escapeHtml(err.message)}`);
+  }
+}
+
+async function handleStats(msg, args) {
+  const sub = (args[0] || '').toLowerCase();
+  if (sub !== 'confidence') {
+    return reply(msg, 'Usage: <code>/stats confidence</code> — bandingkan confidence LLM vs win rate aktual dari posisi yang sudah closed.');
+  }
+
+  try {
+    const buckets = await confidenceCalibration();
+    if (buckets.length === 0) {
+      return reply(msg, '📊 Belum ada data cukup di <code>decision_outcomes</code> (posisi closed) untuk dianalisis.');
+    }
+
+    const lines = [`📊 <b>Confidence Calibration</b>`, ``];
+    for (const b of buckets) {
+      lines.push(
+        `<b>${b.bucketLow}-${b.bucketHigh}%</b>: ${b.total} trade, win rate <b>${b.winRate.toFixed(1)}%</b>, ` +
+        `avg PnL ${b.avgPnlUsdt >= 0 ? '+' : ''}${b.avgPnlUsdt.toFixed(2)} USDT`
+      );
+    }
+    lines.push(``, `<i>Kalau confidence terkalibrasi baik, win rate tiap bucket harusnya dekat titik tengah rentangnya (mis. bucket 80-100% → win rate ~90%).</i>`);
+
+    await reply(msg, lines.join('\n'));
+  } catch (err) {
+    await reply(msg, `❌ Error getting confidence stats: ${escapeHtml(err.message)}`);
   }
 }
 

@@ -2,6 +2,7 @@ import { query as pgQuery } from './pg-connection.js';
 import { now, json } from '../utils.js';
 import { TRADING_MODE } from '../config.js';
 import { reserveMargin, releaseMargin, canOpenPosition } from './virtualBalance.js';
+import { recordDecisionOutcome } from './learning.js';
 
 export async function positionById(id) {
   try {
@@ -184,11 +185,15 @@ export async function closePosition(id, exitPrice, exitReason, pnlPercent, pnlUs
     `, [now(), exitPrice, exitReason, pnlPercent, pnlUsdt, signature, id]);
     
     // Release margin for dry_run positions
+    // (Number() is required: pg returns DECIMAL columns as strings, and
+    // `number + string` in JS silently concatenates instead of adding.)
     if (position.execution_mode === 'dry_run') {
-      const marginUsed = position.entry_usdt || 0;
+      const marginUsed = Number(position.entry_usdt) || 0;
       await releaseMargin(marginUsed, pnlUsdt || 0);
       console.log(`[dry_run] Released ${marginUsed.toFixed(2)} USDT margin, PnL: ${(pnlUsdt || 0).toFixed(2)} USDT`);
     }
+
+    await recordDecisionOutcome(id);
   } catch (err) {
     console.error('[positions] closePosition failed:', err.message);
     throw err;
