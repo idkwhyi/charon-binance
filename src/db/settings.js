@@ -12,7 +12,8 @@ async function ensureStrategyCache() {
     strategyCache.clear();
     for (const row of result.rows) {
       const id = row.key.replace('strategy:', '');
-      strategyCache.set(id, JSON.parse(row.value));
+      // pg already decodes JSONB columns into JS objects — don't re-parse
+      strategyCache.set(id, row.value);
     }
     cacheExpiry = Date.now() + 60000; // Cache for 1 minute
   } catch (err) {
@@ -39,12 +40,9 @@ export async function strategyById(id) {
     
     const result = await pgQuery("SELECT value FROM strategy_config WHERE key = $1", [`strategy:${id}`]);
     if (result.rows.length === 0) return defaultStrategy(id);
-    
-    try {
-      return { ...defaultStrategy(id), ...JSON.parse(result.rows[0].value), id };
-    } catch {
-      return defaultStrategy(id);
-    }
+
+    // pg already decodes JSONB columns into JS objects — don't re-parse
+    return { ...defaultStrategy(id), ...result.rows[0].value, id };
   } catch {
     return defaultStrategy(id);
   }
