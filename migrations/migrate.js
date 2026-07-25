@@ -6,8 +6,11 @@
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import dotenv from 'dotenv';
 import pg from 'pg';
 const { Pool } = pg;
+
+dotenv.config();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -38,23 +41,28 @@ async function runMigration() {
     process.exit(1);
   }
 
-  // Step 2: Run schema migration
-  console.log('📝 Running schema migration...');
-  const schemaPath = path.join(__dirname, '001_initial_schema.sql');
-  const schemaSql = fs.readFileSync(schemaPath, 'utf8');
-  
-  try {
-    await pool.query(schemaSql);
-    console.log('✅ Schema created successfully\n');
-  } catch (err) {
-    if (err.message.includes('already exists')) {
-      console.log('ℹ️  Schema already exists, skipping schema creation\n');
-    } else {
-      console.error('❌ Schema migration failed:', err.message);
-      await pool.end();
-      process.exit(1);
+  // Step 2: Run schema migrations, in filename order (001_, 002_, ...)
+  console.log('📝 Running schema migrations...');
+  const migrationFiles = fs.readdirSync(__dirname)
+    .filter(f => /^\d+_.*\.sql$/.test(f))
+    .sort();
+
+  for (const file of migrationFiles) {
+    console.log(`   → ${file}`);
+    const sql = fs.readFileSync(path.join(__dirname, file), 'utf8');
+    try {
+      await pool.query(sql);
+    } catch (err) {
+      if (err.message.includes('already exists')) {
+        console.log(`   ℹ️  ${file}: schema already exists, skipping`);
+      } else {
+        console.error(`❌ Migration ${file} failed:`, err.message);
+        await pool.end();
+        process.exit(1);
+      }
     }
   }
+  console.log('✅ Schema migrations complete\n');
 
   // Step 3: Seed default strategies
   console.log('🌱 Seeding default strategies...');

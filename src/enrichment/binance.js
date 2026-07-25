@@ -1,6 +1,6 @@
 import axios from 'axios';
 import { BINANCE_FUTURES_BASE_URL, BINANCE_API_KEY, BINANCE_API_SECRET, JSON_HEADERS } from '../config.js';
-import { buildSignedParams } from '../utils.js';
+import { buildSignedParams, sleep } from '../utils.js';
 
 const BASE = BINANCE_FUTURES_BASE_URL;
 
@@ -42,6 +42,45 @@ export async function fetchKlines(symbol, interval = '15m', limit = 100) {
     closeTime: k[6],
     quoteVolume: Number(k[7]),
   }));
+}
+
+/**
+ * Public: fetch a full historical kline range, paginating past Binance's
+ * 1500-candle-per-request limit. Used by the backtest engine to pull months
+ * of data. `endTime` is inclusive; candles beyond it are trimmed off.
+ */
+export async function fetchKlinesRange(symbol, interval, startTime, endTime, { pauseMs = 250 } = {}) {
+  const maxBatch = 1500;
+  const all = [];
+  let cursor = startTime;
+
+  while (cursor <= endTime) {
+    const res = await axios.get(`${BASE}/fapi/v1/klines`, {
+      timeout: 10_000,
+      headers: JSON_HEADERS,
+      params: { symbol, interval, startTime: cursor, endTime, limit: maxBatch },
+    });
+
+    const batch = res.data.map(k => ({
+      openTime: k[0],
+      open: Number(k[1]),
+      high: Number(k[2]),
+      low: Number(k[3]),
+      close: Number(k[4]),
+      volume: Number(k[5]),
+      closeTime: k[6],
+      quoteVolume: Number(k[7]),
+    }));
+
+    if (batch.length === 0) break;
+    all.push(...batch);
+
+    if (batch.length < maxBatch) break; // last page reached
+    cursor = batch[batch.length - 1].closeTime + 1;
+    await sleep(pauseMs); // stay well under Binance's request-weight limit
+  }
+
+  return all.filter(k => k.openTime <= endTime);
 }
 
 /**
