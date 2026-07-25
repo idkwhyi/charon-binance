@@ -4,9 +4,12 @@ import { TRADE_AMOUNT_USDT, MARGIN_TYPE } from '../config.js';
 
 /**
  * Build a structured candidate object from a raw signal event.
+ * @param {object} signal
+ * @param {object|null} strategyOverride - pass an explicit strategy (e.g. from the
+ *   backtest runner) instead of reading the live active_strategy setting.
  */
-export async function buildCandidate(signal) {
-  const strat = await activeStrategy();
+export async function buildCandidate(signal, strategyOverride = null) {
+  const strat = strategyOverride || await activeStrategy();
   const ticker = signal.ticker || {};
   const markPrice = firstPositive(ticker.lastPrice, ticker.price, 0);
   const volume24h = firstPositive(ticker.quoteVolume, 0);
@@ -67,10 +70,11 @@ export async function buildCandidate(signal) {
 
 /**
  * Apply strategy filters to a candidate.
+ * @param {object|null} strategyOverride - see buildCandidate.
  * Returns { passed: boolean, failures: string[] }
  */
-export async function filterCandidate(candidate) {
-  const strat = await activeStrategy();
+export async function filterCandidate(candidate, strategyOverride = null) {
+  const strat = strategyOverride || await activeStrategy();
   const failures = [];
 
   const { markPrice, volume24hUsdt, openInterestUsdt, fundingRate, lastKlineVolume } = candidate.metrics;

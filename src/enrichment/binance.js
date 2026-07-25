@@ -84,6 +84,39 @@ export async function fetchKlinesRange(symbol, interval, startTime, endTime, { p
 }
 
 /**
+ * Public: fetch historical funding rate records for a symbol, paginated.
+ * Used by the backtest engine so replayed funding_extreme signals use the
+ * actual rate at that point in time instead of a live snapshot.
+ */
+export async function fetchFundingRateHistory(symbol, startTime, endTime, { pauseMs = 250 } = {}) {
+  const maxBatch = 1000;
+  const all = [];
+  let cursor = startTime;
+
+  while (cursor <= endTime) {
+    const res = await axios.get(`${BASE}/fapi/v1/fundingRate`, {
+      timeout: 10_000,
+      headers: JSON_HEADERS,
+      params: { symbol, startTime: cursor, endTime, limit: maxBatch },
+    });
+
+    const batch = res.data.map(f => ({
+      fundingTime: f.fundingTime,
+      fundingRate: Number(f.fundingRate),
+    }));
+
+    if (batch.length === 0) break;
+    all.push(...batch);
+
+    if (batch.length < maxBatch) break;
+    cursor = batch[batch.length - 1].fundingTime + 1;
+    await sleep(pauseMs);
+  }
+
+  return all.filter(f => f.fundingTime <= endTime);
+}
+
+/**
  * Public: fetch premium index (mark price + funding rate).
  */
 export async function fetchPremiumIndex(symbol) {
