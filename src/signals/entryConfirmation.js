@@ -13,51 +13,55 @@
 
 /**
  * Detect Market Structure Shift (MSS) on lower timeframe.
- * 
+ *
  * For LONG: Price breaks above recent swing high (bullish MSS)
  * For SHORT: Price breaks below recent swing low (bearish MSS)
- * 
+ *
+ * Scans the last `confirmWindow` candles (not just the latest one) for a
+ * break, since in practice the MSS candle and the later pullback into the
+ * OB's optimal zone are rarely the same candle — the shift confirms the
+ * reversal, then price retraces into the zone a few candles later.
+ *
  * @param {Array} klines - 15m klines, sorted oldest first
  * @param {'LONG'|'SHORT'} direction
- * @param {number} lookback - candles to look back for swing points
+ * @param {number} lookback - candles used to establish the swing reference for each candidate
+ * @param {number} confirmWindow - how many recent candles may count as the MSS break
  * @returns {{ detected: boolean, mssPrice: number|null, mssTime: number|null }}
  */
-export function detectMarketStructureShift(klines, direction, lookback = 10) {
-  if (!klines || klines.length < lookback + 2) {
+export function detectMarketStructureShift(klines, direction, lookback = 10, confirmWindow = 5) {
+  if (!klines || klines.length < lookback + confirmWindow + 1) {
     return { detected: false, mssPrice: null, mssTime: null };
   }
 
-  // Get recent candles for analysis
-  const recentKlines = klines.slice(-lookback - 1);
-  const lastCandle = klines[klines.length - 1];
+  // Walk backwards from the latest candle; each candidate's swing reference
+  // is the `lookback` candles strictly before it (no lookahead).
+  for (let offset = 0; offset < confirmWindow; offset++) {
+    const idx = klines.length - 1 - offset;
+    const swingCandles = klines.slice(Math.max(0, idx - lookback), idx);
+    if (!swingCandles.length) continue;
 
-  if (direction === 'LONG') {
-    // Find recent swing high (highest high in lookback period, excluding last candle)
-    const swingHigh = Math.max(...recentKlines.slice(0, -1).map(k => k.high));
-    
-    // MSS detected if last candle closes above swing high
-    const detected = lastCandle.close > swingHigh;
-    
-    return {
-      detected,
-      mssPrice: detected ? swingHigh : null,
-      mssTime: detected ? lastCandle.closeTime : null,
-      swingLevel: swingHigh,
-    };
-  } else {
-    // Find recent swing low (lowest low in lookback period, excluding last candle)
-    const swingLow = Math.min(...recentKlines.slice(0, -1).map(k => k.low));
-    
-    // MSS detected if last candle closes below swing low
-    const detected = lastCandle.close < swingLow;
-    
-    return {
-      detected,
-      mssPrice: detected ? swingLow : null,
-      mssTime: detected ? lastCandle.closeTime : null,
-      swingLevel: swingLow,
-    };
+    const candle = klines[idx];
+
+    if (direction === 'LONG') {
+      const swingHigh = Math.max(...swingCandles.map(k => k.high));
+      if (candle.close > swingHigh) {
+        return { detected: true, mssPrice: swingHigh, mssTime: candle.closeTime, swingLevel: swingHigh, candlesAgo: offset };
+      }
+    } else {
+      const swingLow = Math.min(...swingCandles.map(k => k.low));
+      if (candle.close < swingLow) {
+        return { detected: true, mssPrice: swingLow, mssTime: candle.closeTime, swingLevel: swingLow, candlesAgo: offset };
+      }
+    }
   }
+
+  // Not detected — report the current swing level for diagnostics
+  const currentSwingCandles = klines.slice(-lookback - 1, -1);
+  const swingLevel = direction === 'LONG'
+    ? Math.max(...currentSwingCandles.map(k => k.high))
+    : Math.min(...currentSwingCandles.map(k => k.low));
+
+  return { detected: false, mssPrice: null, mssTime: null, swingLevel };
 }
 
 /**
