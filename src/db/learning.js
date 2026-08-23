@@ -122,3 +122,48 @@ export async function confidenceCalibration() {
     return [];
   }
 }
+
+const CALIBRATION_DIMENSIONS = { signal: 'signal_type', strategy: 'strategy_id' };
+
+/**
+ * Same calibration buckets as confidenceCalibration(), but grouped by
+ * signal_type or strategy_id first — a global calibration curve can hide
+ * a signal whose confidence is well-calibrated while another is not.
+ */
+export async function confidenceCalibrationBy(dimension) {
+  const column = CALIBRATION_DIMENSIONS[dimension];
+  if (!column) throw new Error(`Invalid calibration dimension: ${dimension}`);
+
+  try {
+    const result = await pgQuery(`
+      SELECT
+        ${column} AS group_key,
+        width_bucket(confidence, 0, 100, 5) AS bucket,
+        COUNT(*) AS total,
+        SUM(CASE WHEN pnl_usdt > 0 THEN 1 ELSE 0 END) AS wins,
+        AVG(pnl_usdt) AS avg_pnl_usdt,
+        AVG(r_multiple) AS avg_r_multiple
+      FROM decision_outcomes
+      WHERE confidence IS NOT NULL AND ${column} IS NOT NULL
+      GROUP BY ${column}, bucket
+      ORDER BY ${column}, bucket
+    `);
+    return result.rows.map(r => {
+      const total = Number(r.total);
+      const wins = Number(r.wins);
+      return {
+        groupKey: r.group_key,
+        bucketLow: (Number(r.bucket) - 1) * 20,
+        bucketHigh: Number(r.bucket) * 20,
+        total,
+        wins,
+        winRate: total > 0 ? (wins / total) * 100 : 0,
+        avgPnlUsdt: Number(r.avg_pnl_usdt || 0),
+        avgRMultiple: r.avg_r_multiple !== null ? Number(r.avg_r_multiple) : null,
+      };
+    });
+  } catch (err) {
+    console.error(`[learning] confidenceCalibrationBy(${dimension}) failed:`, err.message);
+    return [];
+  }
+}

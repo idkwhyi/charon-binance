@@ -14,7 +14,7 @@ import { getWatchlist, addToWatchlist, removeFromWatchlist, getPinnedSymbols } f
 import { refreshTopGainers } from '../enrichment/topGainers.js';
 import { reconnectWebSocket, warmupKlines } from '../signals/scanner.js';
 import { getVirtualBalanceStats, getBalanceSummary, resetVirtualBalance, initializeVirtualBalance } from '../db/virtualBalance.js';
-import { addLesson, getActiveLessons, confidenceCalibration } from '../db/learning.js';
+import { addLesson, getActiveLessons, confidenceCalibration, confidenceCalibrationBy } from '../db/learning.js';
 
 let bot = null;
 
@@ -95,7 +95,7 @@ async function handleHelp(msg) {
     `/balance — Show virtual balance (dry_run mode)`,
     `/reset_balance [amount] — Reset virtual balance (default: 1000 USDT)`,
     `/backtest — Show backtest performance summary`,
-    `/stats confidence — LLM confidence vs actual win rate`,
+    `/stats confidence [signal|strategy] — LLM confidence vs actual win rate`,
   ].join('\n'));
 }
 
@@ -453,8 +453,19 @@ async function handleBacktest(msg) {
 
 async function handleStats(msg, args) {
   const sub = (args[0] || '').toLowerCase();
+  const dimension = (args[1] || '').toLowerCase();
+
   if (sub !== 'confidence') {
-    return reply(msg, 'Usage: <code>/stats confidence</code> — bandingkan confidence LLM vs win rate aktual dari posisi yang sudah closed.');
+    return reply(msg, [
+      'Usage:',
+      '<code>/stats confidence</code> — win rate aktual vs confidence LLM (global)',
+      '<code>/stats confidence signal</code> — breakdown per signal type',
+      '<code>/stats confidence strategy</code> — breakdown per strategy',
+    ].join('\n'));
+  }
+
+  if (dimension === 'signal' || dimension === 'strategy') {
+    return handleStatsConfidenceBreakdown(msg, dimension);
   }
 
   try {
@@ -478,6 +489,39 @@ async function handleStats(msg, args) {
   }
 }
 
+async function handleStatsConfidenceBreakdown(msg, dimension) {
+  const label = dimension === 'signal' ? 'Signal Type' : 'Strategy';
+
+  try {
+    const rows = await confidenceCalibrationBy(dimension);
+    if (rows.length === 0) {
+      return reply(msg, '📊 Belum ada data cukup di <code>decision_outcomes</code> (posisi closed) untuk dianalisis.');
+    }
+
+    const groups = new Map();
+    for (const r of rows) {
+      if (!groups.has(r.groupKey)) groups.set(r.groupKey, []);
+      groups.get(r.groupKey).push(r);
+    }
+
+    const lines = [`📊 <b>Confidence Calibration by ${label}</b>`, ``];
+    for (const [key, buckets] of groups) {
+      lines.push(`<b>${key}</b>`);
+      for (const b of buckets) {
+        lines.push(
+          `  ${b.bucketLow}-${b.bucketHigh}%: ${b.total} trade, win rate ${b.winRate.toFixed(1)}%, ` +
+          `avg PnL ${b.avgPnlUsdt >= 0 ? '+' : ''}${b.avgPnlUsdt.toFixed(2)} USDT`
+        );
+      }
+      lines.push('');
+    }
+
+    await reply(msg, lines.join('\n'));
+  } catch (err) {
+    await reply(msg, `❌ Error getting confidence breakdown: ${escapeHtml(err.message)}`);
+  }
+}
+
 async function handleStrategySelect(query, id) {
   const all = allStrategyIds();
   if (!all.includes(id)) return;
@@ -490,16 +534,16 @@ async function handleStrategySelect(query, id) {
 }
 
 async function handleIntentApprove(query, intentId) {
-  const intent = getTradeIntent(intentId);
+  const intent = await getTradeIntent(intentId);
   if (!intent || intent.status !== 'pending_confirmation') {
     return bot.sendMessage(query.message.chat.id, '❌ Intent not found or already processed.', { parse_mode: 'HTML' });
   }
-  updateTradeIntentStatus(intentId, 'approved');
+  await updateTradeIntentStatus(intentId, 'approved');
   const { candidate, decision } = JSON.parse(intent.intent_json);
   try {
     const { orderId, liqPrice } = await executeFuturesBuy(candidate, decision);
     candidate.metrics.liqPrice = liqPrice;
-    const positionId = createLivePosition(intent.candidate_id, candidate, decision, orderId);
+    const positionId = await createLivePosition(intent.candidate_id, candidate, decision, orderId);
     await sendPositionOpen(positionId);
     await bot.sendMessage(query.message.chat.id, `✅ Intent #${intentId} executed.`, { parse_mode: 'HTML' });
   } catch (err) {
