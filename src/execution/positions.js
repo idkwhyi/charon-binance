@@ -5,6 +5,7 @@ import { fetchPremiumIndex } from '../enrichment/binance.js';
 import { sendPositionExit, sendTelegram } from '../telegram/send.js';
 import { executeFuturesSell, cancelAllOrders } from './futuresExecutor.js';
 import { isMaxHoldHit } from './exitRules.js';
+import { exitQuantity } from './positionMath.js';
 
 const sellInProgress = new Set();
 
@@ -85,8 +86,8 @@ export async function refreshPosition(position, autoExit = true) {
 
     try {
       if (position.execution_mode === 'live') {
-        const quantity = Number(position.notional_usdt) / entryPrice;
-        const sell = await executeFuturesSell(position.symbol, position.direction, quantity.toFixed(3));
+        // Close exactly the quantity opened (already rounded to stepSize at entry)
+        const sell = await executeFuturesSell(position.symbol, position.direction, exitQuantity(position));
         await cancelAllOrders(position.symbol);
         const realPricePct = isLong
           ? (sell.fillPrice / entryPrice - 1) * 100

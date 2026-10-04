@@ -205,9 +205,9 @@ async function handleApprovedBuy(selectedRow, decision, batchId, triggerCandidat
 
   // Live mode
   try {
-    const { orderId, liqPrice } = await executeFuturesBuy(rowCandidate, decision);
+    const { orderId, liqPrice, fillPrice, quantity } = await executeFuturesBuy(rowCandidate, decision);
     rowCandidate.metrics.liqPrice = liqPrice;
-    const positionId = await createLivePosition(selectedRow.id, rowCandidate, decision, orderId);
+    const positionId = await createLivePosition(selectedRow.id, rowCandidate, decision, orderId, { fillPrice, quantity });
     console.log(`[live] opened position #${positionId} ${rowCandidate.symbol} ${decision.direction} ${rowCandidate.leverage}x order=${orderId}`);
     await sendPositionOpen(positionId);
   } catch (err) {

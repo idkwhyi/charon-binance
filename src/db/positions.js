@@ -3,6 +3,7 @@ import { now, json } from '../utils.js';
 import { TRADING_MODE } from '../config.js';
 import { reserveMargin, releaseMargin, canOpenPosition } from './virtualBalance.js';
 import { recordDecisionOutcome } from './learning.js';
+import { positionSize } from '../execution/positionMath.js';
 
 export async function positionById(id) {
   try {
@@ -77,94 +78,76 @@ function calcTpSlPercent(direction, entryPrice, stopLoss, takeProfit) {
   }
 }
 
+function tpSlPercents(candidate, decision, entryPrice) {
+  const obMeta = candidate.signals?.meta || {};
+  if (obMeta.stopLoss && obMeta.takeProfit && entryPrice > 0) {
+    return calcTpSlPercent(decision.direction, entryPrice, obMeta.stopLoss, obMeta.takeProfit);
+  }
+  return { tpPercent: decision.suggested_tp_percent, slPercent: decision.suggested_sl_percent };
+}
+
+async function insertPosition({ candidateId, candidate, decision, mode, entryPrice, quantity, notionalUsdt, orderId = null }) {
+  const { tpPercent, slPercent } = tpSlPercents(candidate, decision, entryPrice);
+  const result = await pgQuery(`
+    INSERT INTO positions (
+      candidate_id, symbol, direction, leverage, margin_type,
+      entry_price, entry_usdt, notional_usdt, quantity,
+      tp_percent, sl_percent, trailing_enabled, trailing_percent,
+      high_water_price, low_water_price, liq_price,
+      status, execution_mode, binance_order_id, opened_at_ms, strategy_id
+    ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,'open',$17,$18,$19,$20)
+    RETURNING id
+  `, [
+    candidateId, candidate.symbol, decision.direction,
+    candidate.leverage || 1, candidate.marginType || 'ISOLATED',
+    entryPrice, candidate.entryUsdt, notionalUsdt, quantity,
+    tpPercent, slPercent, false, 0,
+    entryPrice, entryPrice,
+    candidate.metrics.liqPrice || null,
+    mode, orderId, now(), candidate.strategyId,
+  ]);
+  return result.rows[0]?.id;
+}
+
 export async function createDryRunPosition(candidateId, candidate, decision) {
   try {
     const entryPrice = candidate.metrics.markPrice;
-    const obMeta = candidate.signals?.meta || {};
-
-    let tpPercent, slPercent;
-    if (obMeta.stopLoss && obMeta.takeProfit && entryPrice > 0) {
-      ({ tpPercent, slPercent } = calcTpSlPercent(
-        decision.direction, entryPrice, obMeta.stopLoss, obMeta.takeProfit
-      ));
-    } else {
-      tpPercent = decision.suggested_tp_percent;
-      slPercent = decision.suggested_sl_percent;
-    }
-
-    // Calculate margin requirement for dry_run
     const marginRequired = candidate.entryUsdt || 0;
-    
+    const { notionalUsdt, quantity } = positionSize({
+      entryUsdt: marginRequired, leverage: candidate.leverage || 1, entryPrice,
+    });
+
     // Check virtual balance before opening position
     if (!(await canOpenPosition(marginRequired))) {
       throw new Error(`Insufficient virtual balance for ${candidate.symbol} ${decision.direction} position (${marginRequired.toFixed(2)} USDT required)`);
     }
-    
+
     // Reserve margin in virtual balance
     await reserveMargin(marginRequired);
 
-    // Create position in PostgreSQL
-    const result = await pgQuery(`
-      INSERT INTO positions (
-        candidate_id, symbol, direction, leverage, margin_type,
-        entry_price, entry_usdt, notional_usdt,
-        tp_percent, sl_percent, trailing_enabled, trailing_percent,
-        high_water_price, low_water_price, liq_price,
-        status, execution_mode, opened_at_ms, strategy_id
-      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,'open','dry_run',$16,$17)
-      RETURNING id
-    `, [
-      candidateId, candidate.symbol, decision.direction,
-      candidate.leverage || 1, candidate.marginType || 'ISOLATED',
-      entryPrice, candidate.entryUsdt, candidate.entryUsdt,
-      tpPercent, slPercent, false, 0,
-      entryPrice, entryPrice,
-      candidate.metrics.liqPrice || null,
-      now(), candidate.strategyId,
-    ]);
-    
-    console.log(`[dry_run] Reserved ${marginRequired.toFixed(2)} USDT margin for position ${result.rows[0]?.id}`);
-    return result.rows[0]?.id;
+    const id = await insertPosition({
+      candidateId, candidate, decision, mode: 'dry_run', entryPrice, quantity, notionalUsdt,
+    });
+    console.log(`[dry_run] Reserved ${marginRequired.toFixed(2)} USDT margin for position ${id}`);
+    return id;
   } catch (err) {
     console.error('[positions] createDryRunPosition failed:', err.message);
     throw err;
   }
 }
 
-export async function createLivePosition(candidateId, candidate, decision, orderId) {
+/**
+ * @param {object} fill - { fillPrice, quantity } as actually executed on Binance
+ */
+export async function createLivePosition(candidateId, candidate, decision, orderId, fill = {}) {
   try {
-    const entryPrice = candidate.metrics.markPrice;
-    const obMeta = candidate.signals?.meta || {};
-
-    let tpPercent, slPercent;
-    if (obMeta.stopLoss && obMeta.takeProfit && entryPrice > 0) {
-      ({ tpPercent, slPercent } = calcTpSlPercent(
-        decision.direction, entryPrice, obMeta.stopLoss, obMeta.takeProfit
-      ));
-    } else {
-      tpPercent = decision.suggested_tp_percent;
-      slPercent = decision.suggested_sl_percent;
-    }
-
-    const result = await pgQuery(`
-      INSERT INTO positions (
-        candidate_id, symbol, direction, leverage, margin_type,
-        entry_price, entry_usdt, notional_usdt,
-        tp_percent, sl_percent, trailing_enabled, trailing_percent,
-        high_water_price, low_water_price, liq_price,
-        status, execution_mode, binance_order_id, opened_at_ms, strategy_id
-      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,'open','live',$16,$17,$18)
-      RETURNING id
-    `, [
-      candidateId, candidate.symbol, decision.direction,
-      candidate.leverage || 1, candidate.marginType || 'ISOLATED',
-      entryPrice, candidate.entryUsdt, candidate.entryUsdt,
-      tpPercent, slPercent, false, 0,
-      entryPrice, entryPrice,
-      candidate.metrics.liqPrice || null,
-      orderId || null, now(), candidate.strategyId,
-    ]);
-    return result.rows[0]?.id;
+    const entryPrice = Number(fill.fillPrice) || candidate.metrics.markPrice;
+    const quantity = Number(fill.quantity)
+      || positionSize({ entryUsdt: candidate.entryUsdt, leverage: candidate.leverage || 1, entryPrice }).quantity;
+    return await insertPosition({
+      candidateId, candidate, decision, mode: 'live', entryPrice, quantity,
+      notionalUsdt: quantity * entryPrice, orderId,
+    });
   } catch (err) {
     console.error('[positions] createLivePosition failed:', err.message);
     throw err;

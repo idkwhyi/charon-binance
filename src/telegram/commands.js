@@ -545,9 +545,9 @@ async function handleIntentApprove(query, intentId) {
   }
   await updateTradeIntentStatus(intentId, 'approved');
   try {
-    const { orderId, liqPrice } = await executeFuturesBuy(candidate, decision);
+    const { orderId, liqPrice, fillPrice, quantity } = await executeFuturesBuy(candidate, decision);
     candidate.metrics.liqPrice = liqPrice;
-    const positionId = await createLivePosition(intent.candidate_id, candidate, decision, orderId);
+    const positionId = await createLivePosition(intent.candidate_id, candidate, decision, orderId, { fillPrice, quantity });
     await sendPositionOpen(positionId);
     await bot.sendMessage(query.message.chat.id, `✅ Intent #${intentId} executed.`, { parse_mode: 'HTML' });
   } catch (err) {
