@@ -15,7 +15,8 @@ import { signalDedupKey, DEDUP_TTL_MS } from './dedup.js';
 import { planEntry } from './entryPlan.js';
 import { resolveAvailableBalance } from './candidateBuilder.js';
 import { fetchPremiumIndex } from '../enrichment/binance.js';
-import { RISK_PERCENT_PER_TRADE, MAX_MARGIN_PERCENT_PER_TRADE } from '../config.js';
+import { RISK_PERCENT_PER_TRADE, MAX_MARGIN_PERCENT_PER_TRADE, DRY_RUN_SLIPPAGE_PERCENT } from '../config.js';
+import { applySlippage } from '../execution/simulation.js';
 
 export const seenSignals = new Map();
 
@@ -184,12 +185,17 @@ export async function processSignalCandidate(rawSignal, stratOverride = null) {
 }
 
 async function planAtActualPrice(candidate, decision) {
-  let entryPrice;
+  let markPrice;
   try {
-    entryPrice = Number((await fetchPremiumIndex(candidate.symbol)).markPrice);
+    markPrice = Number((await fetchPremiumIndex(candidate.symbol)).markPrice);
   } catch (err) {
     return { ok: false, reason: `mark price fetch failed: ${err.message}` };
   }
+  // Dry-run fills pay simulated slippage, so plan R:R/sizing at the slipped price
+  const entryPrice = tradingMode() === 'dry_run'
+    ? applySlippage(markPrice, decision.direction, 'entry', DRY_RUN_SLIPPAGE_PERCENT)
+    : markPrice;
+  candidate.metrics.entryMarkPrice = markPrice;
   const strat = await activeStrategy();
   const meta = candidate.signals?.meta || {};
   const availableBalanceUsdt = await resolveAvailableBalance(null);

@@ -4,6 +4,7 @@ import { TRADING_MODE } from '../config.js';
 import { reserveMargin, releaseMargin, canOpenPosition } from './virtualBalance.js';
 import { recordDecisionOutcome } from './learning.js';
 import { positionSize } from '../execution/positionMath.js';
+import { levelsFromPercents } from '../execution/simulation.js';
 
 export async function positionById(id) {
   try {
@@ -88,14 +89,17 @@ function tpSlPercents(candidate, decision, entryPrice) {
 
 async function insertPosition({ candidateId, candidate, decision, mode, entryPrice, quantity, notionalUsdt, orderId = null }) {
   const { tpPercent, slPercent } = tpSlPercents(candidate, decision, entryPrice);
+  const levels = levelsFromPercents(decision.direction, entryPrice, Number(tpPercent), Number(slPercent));
+  const riskUsdt = quantity * Math.abs(entryPrice - levels.stopLoss);
   const result = await pgQuery(`
     INSERT INTO positions (
       candidate_id, symbol, direction, leverage, margin_type,
       entry_price, entry_usdt, notional_usdt, quantity,
       tp_percent, sl_percent, trailing_enabled, trailing_percent,
       high_water_price, low_water_price, liq_price,
+      entry_mark_price, stop_loss_price, take_profit_price, risk_usdt,
       status, execution_mode, binance_order_id, opened_at_ms, strategy_id
-    ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,'open',$17,$18,$19,$20)
+    ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,'open',$21,$22,$23,$24)
     RETURNING id
   `, [
     candidateId, candidate.symbol, decision.direction,
@@ -104,6 +108,7 @@ async function insertPosition({ candidateId, candidate, decision, mode, entryPri
     tpPercent, slPercent, false, 0,
     entryPrice, entryPrice,
     candidate.metrics.liqPrice || null,
+    candidate.metrics.entryMarkPrice || entryPrice, levels.stopLoss, levels.takeProfit, riskUsdt,
     mode, orderId, now(), candidate.strategyId,
   ]);
   return result.rows[0]?.id;
@@ -154,7 +159,11 @@ export async function createLivePosition(candidateId, candidate, decision, order
   }
 }
 
-export async function closePosition(id, exitPrice, exitReason, pnlPercent, pnlUsdt, signature = null) {
+/**
+ * @param {object} details - optional fill details (dry-run simulation):
+ *   { exitPriceRaw, entryFeeUsdt, exitFeeUsdt, slippageUsdt, pnlR }
+ */
+export async function closePosition(id, exitPrice, exitReason, pnlPercent, pnlUsdt, signature = null, details = {}) {
   try {
     // Get position info before closing
     const posResult = await pgQuery("SELECT * FROM positions WHERE id = $1", [id]);
@@ -168,9 +177,12 @@ export async function closePosition(id, exitPrice, exitReason, pnlPercent, pnlUs
     await pgQuery(`
       UPDATE positions
       SET status = 'closed', closed_at_ms = $1, exit_price = $2, exit_reason = $3,
-          pnl_percent = $4, pnl_usdt = $5, binance_order_id = COALESCE($6, binance_order_id)
+          pnl_percent = $4, pnl_usdt = $5, binance_order_id = COALESCE($6, binance_order_id),
+          exit_price_raw = $8, entry_fee_usdt = $9, exit_fee_usdt = $10, slippage_usdt = $11, pnl_r = $12
       WHERE id = $7
-    `, [now(), exitPrice, exitReason, pnlPercent, pnlUsdt, signature, id]);
+    `, [now(), exitPrice, exitReason, pnlPercent, pnlUsdt, signature, id,
+        details.exitPriceRaw ?? null, details.entryFeeUsdt ?? null, details.exitFeeUsdt ?? null,
+        details.slippageUsdt ?? null, details.pnlR ?? null]);
     
     // Release margin for dry_run positions
     // (Number() is required: pg returns DECIMAL columns as strings, and
@@ -185,6 +197,14 @@ export async function closePosition(id, exitPrice, exitReason, pnlPercent, pnlUs
   } catch (err) {
     console.error('[positions] closePosition failed:', err.message);
     throw err;
+  }
+}
+
+export async function updateLastCandleChecked(id, ms) {
+  try {
+    await pgQuery('UPDATE positions SET last_candle_checked_ms = $1 WHERE id = $2', [ms, id]);
+  } catch (err) {
+    console.error('[positions] updateLastCandleChecked failed:', err.message);
   }
 }
 

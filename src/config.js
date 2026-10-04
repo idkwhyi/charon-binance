@@ -36,6 +36,10 @@ export const RISK_PERCENT_PER_TRADE = Number(process.env.RISK_PERCENT_PER_TRADE 
 // available balance (protects against very tight SL distances demanding an oversized position).
 export const MAX_MARGIN_PERCENT_PER_TRADE = Number(process.env.MAX_MARGIN_PERCENT_PER_TRADE || 50);
 
+// Dry-run fill simulation (src/execution/simulation.js)
+export const DRY_RUN_SLIPPAGE_PERCENT = Number(process.env.DRY_RUN_SLIPPAGE_PERCENT || 0.03); // per side, adverse
+export const DRY_RUN_TAKER_FEE_PERCENT = Number(process.env.DRY_RUN_TAKER_FEE_PERCENT || 0.05); // per side
+
 // LLM
 export const LLM_BASE_URL = process.env.LLM_BASE_URL || 'https://api.openai.com/v1';
 export const LLM_API_KEY = process.env.LLM_API_KEY || '';
