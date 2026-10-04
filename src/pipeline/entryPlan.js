@@ -14,7 +14,7 @@ import { estimateLiqPrice } from '../execution/positionMath.js';
  * enforced against minRR / minSlDistancePct. Signals without them fall back
  * to percentage-based SL/TP around the entry, where only side/sizing checks apply.
  *
- * @returns {{ ok: boolean, reason: string|null, entryPrice: number, stopLoss: number, takeProfit: number,
+ * @returns {{ ok: boolean, code?: string, reason: string|null, entryPrice: number, stopLoss: number, takeProfit: number,
  *   rrRatio: number, liqPrice: number, slDistancePct: number, tpPercent: number, slPercent: number,
  *   entryUsdt: number, notionalUsdt: number, riskUsdt: number, clamped: boolean }}
  */
@@ -33,9 +33,9 @@ export function planEntry({
   minSlDistancePct = MIN_SL_DISTANCE_PCT,
 }) {
   const isLong = direction === 'LONG';
-  const reject = (reason, extra = {}) => ({ ok: false, reason, entryPrice, stopLoss, takeProfit, ...extra });
+  const reject = (code, reason, extra = {}) => ({ ok: false, code, reason, entryPrice, stopLoss, takeProfit, ...extra });
 
-  if (!(entryPrice > 0)) return reject('entry price missing');
+  if (!(entryPrice > 0)) return reject('price_unavailable', 'entry price missing');
 
   const structural = Number(stopLoss) > 0 && Number(takeProfit) > 0;
   if (!structural) {
@@ -48,10 +48,10 @@ export function planEntry({
   takeProfit = Number(takeProfit);
 
   if (isLong ? stopLoss >= entryPrice : stopLoss <= entryPrice) {
-    return reject(`price ${entryPrice} already beyond SL ${stopLoss}`);
+    return reject('beyond_sl', `price ${entryPrice} already beyond SL ${stopLoss}`);
   }
   if (isLong ? takeProfit <= entryPrice : takeProfit >= entryPrice) {
-    return reject(`price ${entryPrice} already beyond TP ${takeProfit}`);
+    return reject('beyond_tp', `price ${entryPrice} already beyond TP ${takeProfit}`);
   }
 
   const risk = Math.abs(entryPrice - stopLoss);
@@ -63,19 +63,19 @@ export function planEntry({
   const levels = { rrRatio, slDistancePct, tpPercent, slPercent };
 
   if (structural && rrRatio < minRR) {
-    return reject(`R:R at actual entry ${rrRatio.toFixed(2)} < ${minRR}`, levels);
+    return reject('rr_at_entry', `R:R at actual entry ${rrRatio.toFixed(2)} < ${minRR}`, levels);
   }
   if (structural && slDistancePct < minSlDistancePct) {
-    return reject(`SL distance at actual entry ${slDistancePct.toFixed(2)}% < ${minSlDistancePct}%`, levels);
+    return reject('sl_distance_at_entry', `SL distance at actual entry ${slDistancePct.toFixed(2)}% < ${minSlDistancePct}%`, levels);
   }
 
   const liqPrice = estimateLiqPrice(entryPrice, direction, leverage);
   if (isLong ? stopLoss <= liqPrice : stopLoss >= liqPrice) {
-    return reject(`SL ${stopLoss} is not closer than estimated liquidation ${liqPrice.toFixed(8)} at ${leverage}x`, { ...levels, liqPrice });
+    return reject('liq_too_close', `SL ${stopLoss} is not closer than estimated liquidation ${liqPrice.toFixed(8)} at ${leverage}x`, { ...levels, liqPrice });
   }
 
   const sizing = calculatePositionSize({ availableBalanceUsdt, riskPercent, slDistancePercent: slDistancePct, leverage, maxMarginPercent });
-  if (!sizing.ok) return reject(`position sizing: ${sizing.reason}`, levels);
+  if (!sizing.ok) return reject('sizing', `position sizing: ${sizing.reason}`, levels);
 
   return {
     ok: true, reason: null, entryPrice, stopLoss, takeProfit, ...levels, liqPrice,

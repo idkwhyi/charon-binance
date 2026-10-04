@@ -19,6 +19,7 @@ import { getVirtualBalance } from '../db/virtualBalance.js';
 import { utcDayStartMs, dailyLossStatus, directionCounts, directionCapReached } from './riskControls.js';
 import { RISK_PERCENT_PER_TRADE, MAX_MARGIN_PERCENT_PER_TRADE, DRY_RUN_SLIPPAGE_PERCENT, DAILY_LOSS_LIMIT_PERCENT, MAX_SAME_DIRECTION_POSITIONS } from '../config.js';
 import { applySlippage } from '../execution/simulation.js';
+import { recordSignalEvent } from '../db/signalEvents.js';
 
 export const seenSignals = new Map();
 
@@ -32,9 +33,12 @@ export const seenSignals = new Map();
 export async function processScanCycle(rawSignals) {
   const strat = await activeStrategy();
 
-  const blocked = await entryBlockReason();
-  if (blocked) {
-    console.log(`[agent] entries blocked: ${blocked} — skipping cycle of ${rawSignals.length} signal(s)`);
+  const block = await entryBlock();
+  if (block) {
+    console.log(`[agent] entries blocked: ${block.reason} — skipping cycle of ${rawSignals.length} signal(s)`);
+    for (const raw of rawSignals) {
+      await recordSignalEvent(raw, { stage: 'pipeline', outcome: 'rejected', reasonCode: block.code, reason: block.reason });
+    }
     return;
   }
 
@@ -48,13 +52,18 @@ export async function processScanCycle(rawSignals) {
 
   if (!await canOpenMorePositions(strat.max_open_positions || 3)) {
     console.log(`[agent] max positions (${strat.max_open_positions}) reached, skipping cycle of ${rawSignals.length} signal(s)`);
+    for (const raw of rawSignals) {
+      await recordSignalEvent(raw, { stage: 'pipeline', outcome: 'rejected', reasonCode: 'max_positions',
+        reason: `max open positions (${strat.max_open_positions}) reached` });
+    }
     return;
   }
 
   const prepared = [];
   for (const rawSignal of rawSignals) {
-    const p = await prepareCandidate(rawSignal, strat).catch(err => {
+    const p = await prepareCandidate(rawSignal, strat).catch(async err => {
       console.log(`[candidate] ${rawSignal.symbol} prepare failed: ${err.message}`);
+      await recordSignalEvent(rawSignal, { stage: 'pipeline', outcome: 'rejected', reasonCode: 'error', reason: err.message });
       return null;
     });
     if (p) prepared.push(p);
@@ -74,6 +83,12 @@ export async function processScanCycle(rawSignals) {
   for (const { candidate, candidateId } of prepared) {
     if (candidate === selected) continue;
     await updateCandidateStatus(candidateId, 'not_selected');
+    const [reasonCode, reason] = openSymbols.has(candidate.symbol)
+      ? ['symbol_open', 'symbol already has an open position']
+      : blockedDirections.includes(candidate.direction)
+        ? ['direction_cap', `already ${MAX_SAME_DIRECTION_POSITIONS} open ${candidate.direction} position(s)`]
+        : ['not_selected', `ranked below ${selected?.symbol} (score / R:R / volume)`];
+    await recordSignalEvent(candidate, { stage: 'pipeline', outcome: 'rejected', reasonCode, reason, candidateId });
   }
   if (!selected) return;
 
@@ -90,7 +105,10 @@ async function prepareCandidate(rawSignal, strat) {
   // Deduplicate: same symbol + direction at most once per 15m candle
   pruneSeen(seenSignals, DEDUP_TTL_MS);
   const key = signalDedupKey(rawSignal);
-  if (seenSignals.has(key)) return null;
+  if (seenSignals.has(key)) {
+    await recordSignalEvent(rawSignal, { stage: 'pipeline', outcome: 'rejected', reasonCode: 'dedup', reason: 'setup already processed on this 15m candle' });
+    return null;
+  }
   seenSignals.set(key, now());
 
   const candidate = await buildCandidate(rawSignal, strat);
@@ -99,6 +117,8 @@ async function prepareCandidate(rawSignal, strat) {
   const candidateId = await upsertCandidate(candidate);
   if (!candidate.filters.passed) {
     console.log(`[candidate] filtered ${candidate.symbol} (${candidate.signalType}): ${candidate.filters.failures.join('; ')}`);
+    await recordSignalEvent(candidate, { stage: 'pipeline', outcome: 'rejected', reasonCode: 'filter_failed',
+      reason: candidate.filters.failures.join('; '), candidateId, details: { failures: candidate.filters.failures } });
     return null;
   }
 
@@ -131,8 +151,11 @@ async function decideRuleBased(candidate, candidateId, strat) {
   await storeDecision(candidateId, candidate, decision);
   await updateCandidateStatus(candidateId, 'buy');
 
-  if (selfRow && await boolSetting('agent_enabled', 'true') !== false) {
+  if (selfRow && await boolSetting('agent_enabled', true) !== false) {
     await handleApprovedBuy(selfRow, decision, null, candidateId);
+  } else {
+    await recordSignalEvent(candidate, { stage: 'pipeline', outcome: 'rejected', reasonCode: 'agent_disabled',
+      reason: 'agent_enabled is false', candidateId });
   }
 }
 
@@ -144,6 +167,8 @@ export async function processSignalCandidate(rawSignal, stratOverride = null) {
   const positionCount = await openPositionCount();
   if (!await canOpenMorePositions(strat.max_open_positions || 3)) {
     console.log(`[agent] max positions (${positionCount}/${strat.max_open_positions}), skipping ${rawSignal.symbol}`);
+    await recordSignalEvent(rawSignal, { stage: 'pipeline', outcome: 'rejected', reasonCode: 'max_positions',
+      reason: `max open positions (${strat.max_open_positions}) reached` });
     return;
   }
 
@@ -160,6 +185,14 @@ export async function processSignalCandidate(rawSignal, stratOverride = null) {
 
   await storeDecision(candidateId, candidate, batchDecision);
   await updateCandidateStatus(candidateId, isBuy ? 'buy' : batchDecision.verdict.toLowerCase());
+
+  if (!isBuy || !selectedRow) {
+    await recordSignalEvent(candidate, { stage: 'pipeline', outcome: 'rejected',
+      reasonCode: `llm_${batchDecision.verdict.toLowerCase()}`, reason: batchDecision.reason, candidateId });
+  } else if (selectedRow.id !== candidateId) {
+    await recordSignalEvent(candidate, { stage: 'pipeline', outcome: 'rejected', reasonCode: 'not_selected',
+      reason: `LLM picked candidate #${selectedRow.id}`, candidateId });
+  }
 
   // Notify Telegram when LLM passes/watches a valid candidate
   if (!isBuy) {
@@ -178,10 +211,12 @@ export async function processSignalCandidate(rawSignal, stratOverride = null) {
     await sendTelegram(lines.join('\n'));
   }
 
-  if (isBuy && selectedRow && await boolSetting('agent_enabled', 'true') !== false) {
+  if (isBuy && selectedRow && await boolSetting('agent_enabled', true) !== false) {
     const minConf = await numSetting('llm_min_confidence', strat.llm_min_confidence ?? 70);
     if (batchDecision.confidence < minConf) {
       console.log(`[agent] confidence ${batchDecision.confidence} < threshold ${minConf}, skipping`);
+      await recordSignalEvent(selectedRow.candidate || selectedRow, { stage: 'pipeline', outcome: 'rejected', reasonCode: 'low_confidence',
+        reason: `confidence ${batchDecision.confidence} < ${minConf}`, candidateId: selectedRow.id });
       const meta = candidate.signals?.meta || {};
       await sendTelegram([
         `⚠️ <b>Signal skipped — low confidence</b>`,
@@ -199,11 +234,10 @@ export async function processSignalCandidate(rawSignal, stratOverride = null) {
 let dailyLimitNoticeDay = null;
 
 /**
- * Why new entries are currently blocked (paused / daily loss limit), or null.
- * Exported for the Telegram /status command.
+ * Why new entries are currently blocked, as { code, reason }, or null.
  */
-export async function entryBlockReason() {
-  if (await boolSetting('entries_paused', false)) return 'entries paused (/pause)';
+export async function entryBlock() {
+  if (await boolSetting('entries_paused', false)) return { code: 'entries_paused', reason: 'entries paused (/pause)' };
 
   const daily = await dailyLossSnapshot();
   if (daily.breached) {
@@ -212,9 +246,14 @@ export async function entryBlockReason() {
       dailyLimitNoticeDay = day;
       await sendTelegram(`🛑 <b>Daily loss limit hit</b> (${daily.pnlPercent.toFixed(2)}% ≤ -${DAILY_LOSS_LIMIT_PERCENT}%). No new entries until 00:00 UTC (07:00 WIB).`);
     }
-    return `daily loss limit hit (${daily.pnlPercent.toFixed(2)}% <= -${DAILY_LOSS_LIMIT_PERCENT}%), resumes 00:00 UTC`;
+    return { code: 'daily_loss_limit', reason: `daily loss limit hit (${daily.pnlPercent.toFixed(2)}% <= -${DAILY_LOSS_LIMIT_PERCENT}%), resumes 00:00 UTC` };
   }
   return null;
+}
+
+/** Human-readable entryBlock() reason, or null. Used by Telegram /status and /resume. */
+export async function entryBlockReason() {
+  return (await entryBlock())?.reason ?? null;
 }
 
 /** Today's realized PnL vs start-of-UTC-day balance. */
@@ -231,7 +270,7 @@ async function planAtActualPrice(candidate, decision) {
   try {
     markPrice = Number((await fetchPremiumIndex(candidate.symbol)).markPrice);
   } catch (err) {
-    return { ok: false, reason: `mark price fetch failed: ${err.message}` };
+    return { ok: false, code: 'price_unavailable', reason: `mark price fetch failed: ${err.message}` };
   }
   // Dry-run fills pay simulated slippage, so plan R:R/sizing at the slipped price
   const entryPrice = tradingMode() === 'dry_run'
@@ -241,7 +280,7 @@ async function planAtActualPrice(candidate, decision) {
   const strat = await activeStrategy();
   const meta = candidate.signals?.meta || {};
   const availableBalanceUsdt = await resolveAvailableBalance(null);
-  if (availableBalanceUsdt === null) return { ok: false, reason: 'balance lookup failed' };
+  if (availableBalanceUsdt === null) return { ok: false, code: 'balance_unavailable', reason: 'balance lookup failed' };
   return planEntry({
     direction: decision.direction,
     entryPrice,
@@ -272,43 +311,54 @@ function applyPlan(candidate, decision, plan) {
 async function handleApprovedBuy(selectedRow, decision, batchId, triggerCandidateId) {
   const mode = tradingMode();
   const rowCandidate = selectedRow.candidate || selectedRow;
+  const candidateId = selectedRow.id;
+  const log = (outcome, reasonCode, reason, extra = {}) =>
+    recordSignalEvent(rowCandidate, { stage: 'entry', outcome, reasonCode, reason, candidateId, ...extra });
 
   // One position per symbol, regardless of which path (rule/LLM) chose it
   if (await hasOpenPosition(rowCandidate.symbol)) {
     console.log(`[agent] ${rowCandidate.symbol} already has an open position, skipping entry`);
-    return;
+    return log('rejected', 'symbol_open', 'symbol already has an open position');
   }
 
-  const blocked = await entryBlockReason();
-  if (blocked) {
-    console.log(`[agent] ${rowCandidate.symbol} entry blocked: ${blocked}`);
-    return;
+  const block = await entryBlock();
+  if (block) {
+    console.log(`[agent] ${rowCandidate.symbol} entry blocked: ${block.reason}`);
+    return log('rejected', block.code, block.reason);
   }
   if (directionCapReached(await openPositions(), decision.direction, MAX_SAME_DIRECTION_POSITIONS)) {
     console.log(`[agent] ${rowCandidate.symbol} skipped: already ${MAX_SAME_DIRECTION_POSITIONS} open ${decision.direction} position(s)`);
-    return;
+    return log('rejected', 'direction_cap', `already ${MAX_SAME_DIRECTION_POSITIONS} open ${decision.direction} position(s)`);
   }
 
   // Re-plan at the actual entry price (signal levels were computed from OB mid)
   const plan = await planAtActualPrice(rowCandidate, decision);
   if (!plan.ok) {
     console.log(`[agent] ${rowCandidate.symbol} rejected at entry: ${plan.reason}`);
-    await updateCandidateStatus(selectedRow.id, 'rejected_at_entry');
+    await updateCandidateStatus(candidateId, 'rejected_at_entry');
+    await log('rejected', plan.code || 'rejected_at_entry', plan.reason, { details: planDetails(plan) });
     await sendTelegram(`⛔ <b>Entry cancelled — ${escapeHtml(rowCandidate.symbol)} ${decision.direction}</b>\n${escapeHtml(plan.reason)}`);
     return;
   }
   applyPlan(rowCandidate, decision, plan);
 
   if (mode === 'dry_run') {
-    const positionId = await createDryRunPosition(selectedRow.id, rowCandidate, decision);
-    console.log(`[dry_run] opened position #${positionId} ${rowCandidate.symbol} ${decision.direction} ${rowCandidate.leverage}x`);
-    await sendPositionOpen(positionId);
+    try {
+      const positionId = await createDryRunPosition(candidateId, rowCandidate, decision);
+      console.log(`[dry_run] opened position #${positionId} ${rowCandidate.symbol} ${decision.direction} ${rowCandidate.leverage}x`);
+      await log('executed', 'opened', `dry_run position #${positionId}`, { positionId, details: planDetails(plan) });
+      await sendPositionOpen(positionId);
+    } catch (err) {
+      console.log(`[dry_run] open failed ${rowCandidate.symbol}: ${err.message}`);
+      await log('rejected', 'open_failed', err.message, { details: planDetails(plan) });
+    }
     return;
   }
 
   if (mode === 'confirm') {
-    const intentId = await createTradeIntent(selectedRow.id, rowCandidate, decision, mode, 'pending_confirmation');
+    const intentId = await createTradeIntent(candidateId, rowCandidate, decision, mode, 'pending_confirmation');
     console.log(`[confirm] intent #${intentId} created for ${rowCandidate.symbol} ${decision.direction}`);
+    await log('pending_confirmation', 'intent_created', `intent #${intentId}`, { details: planDetails(plan) });
     await sendTradeIntent(intentId, rowCandidate, decision);
     return;
   }
@@ -317,11 +367,13 @@ async function handleApprovedBuy(selectedRow, decision, batchId, triggerCandidat
   try {
     const { orderId, liqPrice, fillPrice, quantity } = await executeFuturesBuy(rowCandidate, decision);
     rowCandidate.metrics.liqPrice = liqPrice;
-    const positionId = await createLivePosition(selectedRow.id, rowCandidate, decision, orderId, { fillPrice, quantity });
+    const positionId = await createLivePosition(candidateId, rowCandidate, decision, orderId, { fillPrice, quantity });
     console.log(`[live] opened position #${positionId} ${rowCandidate.symbol} ${decision.direction} ${rowCandidate.leverage}x order=${orderId}`);
+    await log('executed', 'opened', `live position #${positionId} order ${orderId}`, { positionId, details: { ...planDetails(plan), fillPrice, quantity } });
     await sendPositionOpen(positionId);
   } catch (err) {
     console.log(`[live] buy failed ${rowCandidate.symbol}: ${err.message}`);
+    await log('rejected', 'order_failed', err.message, { details: planDetails(plan) });
     await sendTelegram([
       `🛑 <b>Live buy failed</b>`,
       `Symbol: <b>${escapeHtml(rowCandidate.symbol)}</b>`,
@@ -329,4 +381,9 @@ async function handleApprovedBuy(selectedRow, decision, batchId, triggerCandidat
       `Error: ${escapeHtml(err.message)}`,
     ].join('\n'));
   }
+}
+
+function planDetails(plan) {
+  const { ok, code, reason, ...rest } = plan;
+  return rest;
 }

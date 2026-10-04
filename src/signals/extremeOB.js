@@ -29,6 +29,7 @@ import { confirmEntry, calculateOptimalEntry } from './entryConfirmation.js';
 
 const SIGNAL_TYPE       = 'extreme_ob';
 const SIGNAL_TYPE_WATCH = 'extreme_ob_watch'; // near-miss, not yet in zone
+export const SIGNAL_TYPE_REJECT = 'extreme_ob_reject'; // rejected setup, for the evaluation log only
 export const MIN_RR = 1.8;
 export const MIN_SL_DISTANCE_PCT = 0.5;  // minimum 0.5% SL distance
 export const MIN_TP_DISTANCE_PCT = 1.0;  // minimum 1.0% TP distance
@@ -54,36 +55,41 @@ export function detectExtremeOB(klines1h, klines15m, fundingRate = null) {
 
   // ── Step 1: Market Structure (1H for larger swings) ──────────────────────
   const ms = detectMarketStructure(klines1h, 5, 5); // Increased from 3,3 to 5,5 for more significant swings
-  if (ms.trend === 'RANGING') return signals;
+  if (ms.trend === 'RANGING') {
+    signals.push({ type: SIGNAL_TYPE_REJECT, direction: null, meta: { reasonCode: 'ranging_market', reason: '1H structure is RANGING' } });
+    return signals;
+  }
 
   const direction = ms.trend === 'UPTREND' ? 'LONG' : 'SHORT';
   const sym = `price=${entry} trend=${ms.trend}`;
+  // Log a skip and record it as a reject signal (consumed only by the evaluation log)
+  const reject = (reasonCode, reason) => {
+    console.log(`[ob] skip ${sym}: ${reason}`);
+    signals.push({ type: SIGNAL_TYPE_REJECT, direction, meta: { reasonCode, reason } });
+    return signals;
+  };
 
   // Funding rate bias filter
   if (fundingRate !== null) {
     const fr = Number(fundingRate);
     if (direction === 'LONG'  && fr >  0.002) {
-      console.log(`[ob] skip ${sym}: funding too high for LONG (${fr})`);
-      return signals;
+      return reject('funding_filter', `funding too high for LONG (${fr})`);
     }
     if (direction === 'SHORT' && fr < -0.001) {
-      console.log(`[ob] skip ${sym}: funding too low for SHORT (${fr})`);
-      return signals;
+      return reject('funding_filter', `funding too low for SHORT (${fr})`);
     }
   }
 
   // ── Step 2: Find Extreme Order Block (1H for institutional zones) ────────
   const ob = findRelevantOrderBlock(klines1h, direction, entry);
   if (!ob) {
-    console.log(`[ob] skip ${sym}: no valid OB found`);
-    return signals;
+    return reject('no_order_block', `no valid OB found`);
   }
 
   // ── Step 3: Fibonacci Retracement (1H swings) ────────────────────────────
   const { swingHighs, swingLows } = ms;
   if (swingHighs.length < 1 || swingLows.length < 1) {
-    console.log(`[ob] skip ${sym}: not enough swing points`);
-    return signals;
+    return reject('insufficient_swings', `not enough swing points`);
   }
 
   const lastSwingHigh = swingHighs[swingHighs.length - 1].price;
@@ -110,8 +116,7 @@ export function detectExtremeOB(klines1h, klines15m, fundingRate = null) {
   if (direction === 'LONG') {
     const higherLow = ms.lastHL ?? lastSwingLow;
     if (higherLow >= entry) {
-      console.log(`[ob] skip ${sym}: HL ${higherLow.toFixed(6)} >= entry ${entry.toFixed(6)} (invalid anchor)`);
-      return signals;
+      return reject('invalid_sl_anchor', `HL ${higherLow.toFixed(6)} >= entry ${entry.toFixed(6)} (invalid anchor)`);
     }
     const buffer  = higherLow * 0.003;
     stopLoss      = parseFloat((higherLow - buffer).toFixed(8));
@@ -120,8 +125,7 @@ export function detectExtremeOB(klines1h, klines15m, fundingRate = null) {
   } else {
     const lowerHigh = ms.lastLH ?? lastSwingHigh;
     if (lowerHigh <= entry) {
-      console.log(`[ob] skip ${sym}: LH ${lowerHigh.toFixed(6)} <= entry ${entry.toFixed(6)} (invalid anchor)`);
-      return signals;
+      return reject('invalid_sl_anchor', `LH ${lowerHigh.toFixed(6)} <= entry ${entry.toFixed(6)} (invalid anchor)`);
     }
     const buffer  = lowerHigh * 0.003;
     stopLoss      = parseFloat((lowerHigh + buffer).toFixed(8));
@@ -142,13 +146,11 @@ export function detectExtremeOB(klines1h, klines15m, fundingRate = null) {
   const tpDistancePct = Math.abs((takeProfit - optimalEntry) / optimalEntry * 100);
 
   if (slDistancePct < MIN_SL_DISTANCE_PCT) {
-    console.log(`[ob] skip ${sym}: SL too close (${slDistancePct.toFixed(2)}% < ${MIN_SL_DISTANCE_PCT}%)`);
-    return signals;
+    return reject('sl_too_close', `SL too close (${slDistancePct.toFixed(2)}% < ${MIN_SL_DISTANCE_PCT}%)`);
   }
 
   if (tpDistancePct < MIN_TP_DISTANCE_PCT) {
-    console.log(`[ob] skip ${sym}: TP too close (${tpDistancePct.toFixed(2)}% < ${MIN_TP_DISTANCE_PCT}%)`);
-    return signals;
+    return reject('tp_too_close', `TP too close (${tpDistancePct.toFixed(2)}% < ${MIN_TP_DISTANCE_PCT}%)`);
   }
 
   // ── Step 9: R:R Validation ────────────────────────────────────────────────
@@ -157,20 +159,16 @@ export function detectExtremeOB(klines1h, klines15m, fundingRate = null) {
   const reward = Math.abs(takeProfit - optimalEntry);
 
   if (direction === 'LONG'  && stopLoss >= optimalEntry) {
-    console.log(`[ob] skip ${sym}: SL ${stopLoss.toFixed(6)} >= entry (invalid LONG SL)`);
-    return signals;
+    return reject('invalid_levels', `SL ${stopLoss.toFixed(6)} >= entry (invalid LONG SL)`);
   }
   if (direction === 'SHORT' && stopLoss <= optimalEntry) {
-    console.log(`[ob] skip ${sym}: SL ${stopLoss.toFixed(6)} <= entry (invalid SHORT SL)`);
-    return signals;
+    return reject('invalid_levels', `SL ${stopLoss.toFixed(6)} <= entry (invalid SHORT SL)`);
   }
   if (direction === 'LONG'  && takeProfit <= optimalEntry) {
-    console.log(`[ob] skip ${sym}: TP ${takeProfit.toFixed(6)} <= entry (invalid LONG TP)`);
-    return signals;
+    return reject('invalid_levels', `TP ${takeProfit.toFixed(6)} <= entry (invalid LONG TP)`);
   }
   if (direction === 'SHORT' && takeProfit >= optimalEntry) {
-    console.log(`[ob] skip ${sym}: TP ${takeProfit.toFixed(6)} >= entry (invalid SHORT TP)`);
-    return signals;
+    return reject('invalid_levels', `TP ${takeProfit.toFixed(6)} >= entry (invalid SHORT TP)`);
   }
 
   const rrRatio    = risk > 0 ? reward / risk : 0;
@@ -245,7 +243,7 @@ export function detectExtremeOB(klines1h, klines15m, fundingRate = null) {
       console.log(`[ob] watch ${sym}: waiting for retrace to OB (${ob.obLow?.toFixed(6)}-${ob.obHigh?.toFixed(6)}, dist=${distToOB}%)`);
       signals.push({ type: SIGNAL_TYPE_WATCH, direction, meta: { ...meta, isWatch: true, waitingFor: 'price_in_ob_zone' } });
     } else {
-      console.log(`[ob] skip ${sym}: not in OB zone and R:R ${rrRatio.toFixed(2)} < ${MIN_RR}`);
+      reject('rr_below_min', `not in OB zone and R:R ${rrRatio.toFixed(2)} < ${MIN_RR}`);
     }
     return signals;
   }
@@ -266,15 +264,14 @@ export function detectExtremeOB(klines1h, klines15m, fundingRate = null) {
         } 
       });
     } else {
-      console.log(`[ob] skip ${sym}: R:R ${rrRatio.toFixed(2)} < ${MIN_RR}`);
+      reject('rr_below_min', `R:R ${rrRatio.toFixed(2)} < ${MIN_RR}`);
     }
     return signals;
   }
 
   // ── Full signal: price in OB + entry confirmed + R:R valid ────────────────
   if (rrRatio < MIN_RR) {
-    console.log(`[ob] skip ${sym}: R:R ${rrRatio.toFixed(2)} < ${MIN_RR} | entry=${optimalEntry.toFixed(6)} sl=${stopLoss.toFixed(6)} tp=${takeProfit.toFixed(6)}`);
-    return signals;
+    return reject('rr_below_min', `R:R ${rrRatio.toFixed(2)} < ${MIN_RR} | entry=${optimalEntry.toFixed(6)} sl=${stopLoss.toFixed(6)} tp=${takeProfit.toFixed(6)}`);
   }
 
   console.log(`[ob] SIGNAL ${sym}: ${direction} R:R=${rrRatio.toFixed(2)} entry=${optimalEntry.toFixed(6)} sl=${stopLoss.toFixed(6)} tp=${takeProfit.toFixed(6)} (1H structure, 15m entry, ICT confirmed: ${entryConfirmation.strength})`);

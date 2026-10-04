@@ -6,6 +6,8 @@ import { activeStrategy } from '../db/settings.js';
 import { getWatchlist } from '../db/watchlist.js';
 import { sendWatchAlert } from '../telegram/send.js';
 import { now } from '../utils.js';
+import { recordSignalEvent } from '../db/signalEvents.js';
+import { SIGNAL_TYPE_REJECT } from './extremeOB.js';
 
 let cycleHandler = null;
 let ws = null;
@@ -84,9 +86,30 @@ export async function scanSignals() {
       // Run all indicators with both timeframes
       const allSignals = runIndicators(klines1h, klines15m, fundingRate, strat);
 
-      // Separate watch alerts from actionable signals
-      const watchSignals = allSignals.filter(s => s.type === 'extreme_ob_watch');
-      const triggered    = allSignals.filter(s => allowedSignals.includes(s.type));
+      // Separate watch alerts and detector rejects from actionable signals
+      const watchSignals  = allSignals.filter(s => s.type === 'extreme_ob_watch');
+      const rejectSignals = allSignals.filter(s => s.type === SIGNAL_TYPE_REJECT);
+      const triggered     = allSignals.filter(s => allowedSignals.includes(s.type));
+
+      // Evaluation log: detector-level outcomes (one row per setup per 15m candle)
+      if (allowedSignals.includes('extreme_ob')) {
+        for (const sig of rejectSignals) {
+          recordSignalEvent({ symbol, direction: sig.direction, signalType: 'extreme_ob', klines15m }, {
+            stage: 'detector', outcome: 'rejected', reasonCode: sig.meta.reasonCode, reason: sig.meta.reason,
+          });
+        }
+        for (const sig of watchSignals) {
+          const waitingForZone = sig.meta.waitingFor === 'price_in_ob_zone';
+          recordSignalEvent({ symbol, direction: sig.direction, signalType: 'extreme_ob', klines15m }, {
+            stage: 'detector', outcome: 'watch',
+            reasonCode: waitingForZone ? 'not_in_ob_zone' : 'confirmation_score',
+            reason: waitingForZone
+              ? 'waiting for price to retrace into the OB zone'
+              : `confirmation score ${sig.meta.entryConfirmation?.score}/${sig.meta.entryConfirmation?.maxScore}: ${sig.meta.confirmationNeeded}`,
+            details: { rrRatio: sig.meta.rrRatio, score: sig.meta.entryConfirmation?.score },
+          });
+        }
+      }
 
       // Send watch alerts (deduplicated per 30 min based on symbol + direction only)
       for (const watchSig of watchSignals) {
@@ -105,7 +128,7 @@ export async function scanSignals() {
         }
       }
 
-      totalSignals += allSignals.length;
+      totalSignals += allSignals.length - rejectSignals.length;
 
       if (triggered.length === 0) continue;
 
