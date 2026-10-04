@@ -1,4 +1,4 @@
-import { now, pruneSeen } from '../utils.js';
+import { now } from '../utils.js';
 import { numSetting, boolSetting } from '../db/settings.js';
 import { upsertCandidate, updateCandidateStatus, recentEligibleCandidates, candidateById } from '../db/candidates.js';
 import { storeDecision, storeBatchDecision, createTradeIntent, updateTradeIntentStatus } from '../db/decisions.js';
@@ -11,7 +11,7 @@ import { escapeHtml } from '../format.js';
 import { executeFuturesBuy } from '../execution/futuresExecutor.js';
 import { LLM_DECISION_ENABLED } from '../config.js';
 import { rankCandidates, shouldUseLlm } from './candidateSelector.js';
-import { signalDedupKey, DEDUP_TTL_MS } from './dedup.js';
+import { checkAndMarkSeen } from './dedup.js';
 import { planEntry } from './entryPlan.js';
 import { resolveAvailableBalance } from './candidateBuilder.js';
 import { fetchPremiumIndex, fetchFuturesBalance } from '../enrichment/binance.js';
@@ -22,7 +22,7 @@ import { applySlippage } from '../execution/simulation.js';
 import { recordSignalEvent } from '../db/signalEvents.js';
 import { recordLlmShadow } from './llmShadow.js';
 
-export const seenSignals = new Map();
+export { seenSignals } from './dedup.js';
 
 /**
  * Entry point for one scan cycle: receives every triggered signal at once.
@@ -108,13 +108,10 @@ export async function processScanCycle(rawSignals) {
  */
 async function prepareCandidate(rawSignal, strat) {
   // Deduplicate: same symbol + direction at most once per 15m candle
-  pruneSeen(seenSignals, DEDUP_TTL_MS);
-  const key = signalDedupKey(rawSignal);
-  if (seenSignals.has(key)) {
+  if (checkAndMarkSeen(rawSignal, now())) {
     await recordSignalEvent(rawSignal, { stage: 'pipeline', outcome: 'rejected', reasonCode: 'dedup', reason: 'setup already processed on this 15m candle' });
     return null;
   }
-  seenSignals.set(key, now());
 
   const candidate = await buildCandidate(rawSignal, strat);
   candidate.filters = await filterCandidate(candidate, strat);

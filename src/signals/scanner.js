@@ -9,6 +9,7 @@ import { now } from '../utils.js';
 import { closedOnly, mergeCandle, parseClosedKlineMessage } from './klineCache.js';
 import { recordSignalEvent } from '../db/signalEvents.js';
 import { SIGNAL_TYPE_REJECT } from './extremeOB.js';
+import { markDetectorOutcome } from '../pipeline/dedup.js';
 
 let cycleHandler = null;
 let ws = null;
@@ -99,6 +100,7 @@ export async function scanSignals() {
       // Evaluation log: detector-level outcomes (one row per setup per 15m candle)
       if (allowedSignals.includes('extreme_ob')) {
         for (const sig of rejectSignals) {
+          markDetectorOutcome(symbol, sig, klines15m, t); // rejected setups stay deduped for this candle
           recordSignalEvent({ symbol, direction: sig.direction, signalType: 'extreme_ob', klines15m }, {
             stage: 'detector', outcome: 'rejected', reasonCode: sig.meta.reasonCode, reason: sig.meta.reason,
           });
