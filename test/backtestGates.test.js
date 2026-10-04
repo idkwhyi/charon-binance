@@ -6,6 +6,9 @@ import * as runner from '../src/backtest/runner.js';
 import { portfolioBlock, pickCycleEntry } from '../src/pipeline/portfolioGates.js';
 import { MAX_SAME_DIRECTION_POSITIONS } from '../src/config.js';
 import { installFakePool } from './helpers/fakePool.js';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 const M1 = 60_000, M15 = 15 * M1, H1 = 60 * M1;
 const k = (openTime, step, o = {}) => ({ openTime, open: 100, high: 100.05, low: 99.95, close: 100, volume: 1, quoteVolume: 1e6, closeTime: openTime + step - 1, ...o });
@@ -73,7 +76,8 @@ async function run(plan, { hours = 8, strat: stratOver = {} } = {}) {
   const restore = stubHistory(plan);
   const log = console.log; console.log = () => {};
   try {
-    await runBacktest({ strategyId: id, symbols: Object.keys(plan), dateFromMs: D, dateToMs: D + hours * H1, startingBalance: 1000 });
+    await runBacktest({ strategyId: id, symbols: Object.keys(plan), dateFromMs: D, dateToMs: D + hours * H1, startingBalance: 1000,
+      cacheDir: mkdtempSync(join(tmpdir(), 'charon-bt-')) });
   } finally { console.log = log; restore(); }
   return { opened, rejected: runner.lastRunRejections.filter(r => r.outcome === 'rejected' && r.stage !== 'detector') };
 }

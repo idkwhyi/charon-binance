@@ -2,6 +2,7 @@ import { fetchKlinesRange, fetchFundingRateHistory } from '../enrichment/binance
 import { strategyById } from '../db/settings.js';
 import { buildCandidate, filterCandidate } from '../pipeline/candidateBuilder.js';
 import { runIndicators } from '../signals/indicators.js';
+import { getKlinesCached, DEFAULT_CACHE_DIR } from './klineStore.js';
 import { planEntry } from '../pipeline/entryPlan.js';
 import { seenSignals, checkAndMarkSeen, markDetectorOutcome } from '../pipeline/dedup.js';
 import { portfolioBlock, pickCycleEntry } from '../pipeline/portfolioGates.js';
@@ -115,6 +116,7 @@ export async function runBacktest(opts) {
     dateFromMs,
     dateToMs,
     startingBalance = 1000,
+    cacheDir = DEFAULT_CACHE_DIR,
   } = opts;
   const costs = { slippagePercent: SIM_SLIPPAGE_PERCENT, feePercent: SIM_TAKER_FEE_PERCENT };
 
@@ -136,10 +138,16 @@ export async function runBacktest(opts) {
     const data = {};
     for (const symbol of symbols) {
       console.log(`[backtest] fetching historical data for ${symbol} (1h, 15m, 1m, funding)...`);
+      // Candles come from the local cache; only days not cached yet are downloaded
+      const cached = (interval, from, to) =>
+        getKlinesCached(symbol, interval, from, to, { dir: cacheDir, fetchRange: fetchKlinesRange }).then(r => {
+          if (r.downloadedDays) console.log(`[backtest]   ${symbol} ${interval}: ${r.cachedDays} day(s) cached, ${r.downloadedDays} downloaded`);
+          return r.candles;
+        });
       const [klines1h, klines15m, klines1m, funding] = await Promise.all([
-        fetchKlinesRange(symbol, '1h', dateFromMs - warmupMs1h, dateToMs),
-        fetchKlinesRange(symbol, '15m', dateFromMs - warmupMs15m, dateToMs),
-        fetchKlinesRange(symbol, '1m', dateFromMs, Math.min(exitDataEndMs, Date.now())),
+        cached('1h', dateFromMs - warmupMs1h, dateToMs),
+        cached('15m', dateFromMs - warmupMs15m, dateToMs),
+        cached('1m', dateFromMs, Math.min(exitDataEndMs, Date.now())),
         fetchFundingRateHistory(symbol, dateFromMs - warmupMs1h, dateToMs).catch(() => []),
       ]);
       data[symbol] = { klines1h, klines15m, klines1m, funding, ptr1h: 0, ptr15m: 0 };

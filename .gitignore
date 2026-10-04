@@ -2,3 +2,6 @@ charon-binance.sqlite
 node_modules/
 .env
 *.log
+
+# Backtest kline cache (src/backtest/klineStore.js)
+.cache/
