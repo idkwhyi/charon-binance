@@ -56,6 +56,21 @@ export function parseClosedKlineMessage(raw) {
 
 export const INTERVAL_MS = { '1m': 60_000, '15m': 15 * 60_000, '1h': 60 * 60_000 };
 
+/** Rolling kline window per symbol/timeframe (live cache size = backtest window). */
+export const KLINE_WINDOW = 100;
+
+/**
+ * Startup check for the strict-continuity N per timeframe: 0 < N < window.
+ * @param {Record<string, number>} strictByInterval - e.g. { '15m': 20, '1h': 6 }
+ * @throws {Error} naming every invalid setting
+ */
+export function validateStrictContinuity(strictByInterval, window = KLINE_WINDOW) {
+  const problems = Object.entries(strictByInterval)
+    .filter(([, n]) => !Number.isInteger(n) || n <= 0 || n >= window)
+    .map(([iv, n]) => `KLINE_STRICT_CONTINUITY_CANDLES_${iv.toUpperCase()}=${n} (must be an integer with 0 < N < ${window}, the kline cache window)`);
+  if (problems.length) throw new Error(`Invalid kline continuity config: ${problems.join('; ')}`);
+}
+
 /** openTime of the most recent candle that has closed by nowMs. */
 export function latestClosedOpenTime(intervalMs, nowMs) {
   return Math.floor(nowMs / intervalMs) * intervalMs - intervalMs;

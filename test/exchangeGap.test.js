@@ -8,7 +8,7 @@ import { findGaps, confirmExchangeGaps, classifyGaps, gapKey, latestClosedOpenTi
 import { scanSignals, setCycleHandler, _klineCacheForTest, _exchangeGapsForTest } from '../src/signals/scanner.js';
 import { runBacktest } from '../src/backtest/runner.js';
 import * as runner from '../src/backtest/runner.js';
-import { KLINE_STRICT_CONTINUITY_CANDLES as N } from '../src/config.js';
+import { KLINE_STRICT_CONTINUITY_CANDLES_15M as N, KLINE_STRICT_CONTINUITY_CANDLES_1H as N1H } from '../src/config.js';
 import { installFakePool } from './helpers/fakePool.js';
 import { stubHistory, M15, H1 } from './helpers/history.js';
 
@@ -120,6 +120,17 @@ test('live: a hole inside the last N candles blocks even when the exchange confi
   const { seen, events } = await scan({ '15m': series15(5), '1h': truth1h });
   assert.equal(seen.length, 0);
   assert.ok(events.some(e => e.code === 'DATA_GAP'));
+});
+
+test('live: 1H uses its own N — a 1H hole just older than N_1H is accepted, inside N_1H it blocks', async () => {
+  const truth15 = { '15m': series15(1000) };
+  const ok = await scan({ ...truth15, '1h': truth1h.filter(k => k.openTime !== last1h - (N1H + 1) * H1) });
+  assert.equal(ok.seen.length, 1, `1H hole ${N1H + 1} candles back is outside the 1H strict window`);
+  assert.ok(ok.events.some(e => e.code === 'EXCHANGE_GAP'));
+  _klineCacheForTest().clear(); _exchangeGapsForTest().clear();
+  const blocked = await scan({ ...truth15, '1h': truth1h.filter(k => k.openTime !== last1h - (N1H - 1) * H1) });
+  assert.equal(blocked.seen.length, 0);
+  assert.ok(blocked.events.some(e => e.code === 'DATA_GAP'));
 });
 
 test('live: an old hole that cannot be confirmed (backfill failed) is a DATA_GAP', async () => {

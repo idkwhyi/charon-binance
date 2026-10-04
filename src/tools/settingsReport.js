@@ -1,3 +1,5 @@
+import { validateStrictContinuity } from '../signals/klineCache.js';
+
 /**
  * Pure builder/formatter for `npm run settings:show` (show_settings.js).
  * Takes already-fetched values; no DB or network access here.
@@ -87,7 +89,8 @@ export function buildSettingsReport({ config, env, strat, strategyRow, activeStr
         s('min_open_interest_usdt', 'min_open_interest_usdt', v => v ?? 'none'),
         ['Watchlist', extra.watchlist ? `${extra.watchlist.length}: ${extra.watchlist.join(', ')}` : 'unavailable', 'db/env'],
         ['TOP_GAINER_ENABLED', yesNo(config.TOP_GAINER_ENABLED), fromEnv('TOP_GAINER_ENABLED')],
-        ['KLINE_STRICT_CONTINUITY_CANDLES', config.KLINE_STRICT_CONTINUITY_CANDLES, fromEnv('KLINE_STRICT_CONTINUITY_CANDLES')],
+        ['KLINE_STRICT_CONTINUITY_CANDLES_15M', config.KLINE_STRICT_CONTINUITY_CANDLES_15M, fromEnv('KLINE_STRICT_CONTINUITY_CANDLES_15M')],
+        ['KLINE_STRICT_CONTINUITY_CANDLES_1H', config.KLINE_STRICT_CONTINUITY_CANDLES_1H, fromEnv('KLINE_STRICT_CONTINUITY_CANDLES_1H')],
       ],
     },
     {
@@ -130,6 +133,11 @@ export function buildSettingsReport({ config, env, strat, strategyRow, activeStr
   if (extra.missingSchema?.length) warnings.push(`DB schema is behind the code — run \`npm run migrate\`. Missing: ${extra.missingSchema.join(', ')}`);
   if (extra.legacyLiqRows > 0) warnings.push(`${extra.legacyLiqRows} row(s) still use exit reason LIQUIDATION_GUARD (migration 008).`);
   if (extra.daily?.breached) warnings.push('Daily loss limit is currently hit — no entries until 00:00 UTC.');
+  try {
+    validateStrictContinuity({ '15m': config.KLINE_STRICT_CONTINUITY_CANDLES_15M, '1h': config.KLINE_STRICT_CONTINUITY_CANDLES_1H });
+  } catch (err) {
+    warnings.push(`${err.message} — the bot and backtest will refuse to start.`);
+  }
   for (const e of extra.errors || []) warnings.push(`Could not read ${e}`);
 
   return { sections, warnings };

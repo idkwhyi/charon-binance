@@ -1,4 +1,5 @@
 import dotenv from 'dotenv';
+import { validateStrictContinuity } from './signals/klineCache.js';
 dotenv.config();
 
 export const APP_NAME = 'Charon Binance Futures';
@@ -45,7 +46,9 @@ export const MAX_SAME_DIRECTION_POSITIONS = Number(process.env.MAX_SAME_DIRECTIO
 // Kline continuity (src/signals/klineCache.js classifyGaps): the last N candles per
 // timeframe must be continuous with no exceptions; older holes are accepted only
 // when the exchange confirms it has no candles there. Same rule live and backtest.
-export const KLINE_STRICT_CONTINUITY_CANDLES = Number(process.env.KLINE_STRICT_CONTINUITY_CANDLES || 20);
+export const KLINE_STRICT_CONTINUITY_CANDLES_15M = Number(process.env.KLINE_STRICT_CONTINUITY_CANDLES_15M || 20);
+export const KLINE_STRICT_CONTINUITY_CANDLES_1H = Number(process.env.KLINE_STRICT_CONTINUITY_CANDLES_1H || 6);
+export const KLINE_STRICT_CONTINUITY = { '15m': KLINE_STRICT_CONTINUITY_CANDLES_15M, '1h': KLINE_STRICT_CONTINUITY_CANDLES_1H };
 
 // Fill simulation (src/execution/simulation.js) — the ONE cost model, used by
 // both dry-run and the backtest.
@@ -85,6 +88,9 @@ export const JSON_HEADERS = {
 };
 
 export function validateConfig() {
+  // Fail fast on a strict-continuity N outside 0 < N < kline window
+  validateStrictContinuity(KLINE_STRICT_CONTINUITY);
+
   // PostgreSQL is required
   if (!PG_HOST) throw new Error('PG_HOST is required.');
   if (!PG_USER) throw new Error('PG_USER is required.');

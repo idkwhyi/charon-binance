@@ -1,12 +1,12 @@
 import WebSocket from 'ws';
-import { BINANCE_FUTURES_WS_URL, KLINE_STRICT_CONTINUITY_CANDLES } from '../config.js';
+import { BINANCE_FUTURES_WS_URL, KLINE_STRICT_CONTINUITY } from '../config.js';
 import { fetchKlines, fetchKlinesSince, fetchPremiumIndex, fetchOpenInterest, fetchTicker24h } from '../enrichment/binance.js';
 import { runIndicators } from './indicators.js';
 import { activeStrategy } from '../db/settings.js';
 import { getWatchlist } from '../db/watchlist.js';
 import { sendWatchAlert } from '../telegram/send.js';
 import { now } from '../utils.js';
-import { closedOnly, mergeCandle, parseClosedKlineMessage, findGaps, INTERVAL_MS, gapKey, confirmExchangeGaps, classifyGaps } from './klineCache.js';
+import { closedOnly, mergeCandle, parseClosedKlineMessage, findGaps, INTERVAL_MS, gapKey, confirmExchangeGaps, classifyGaps, KLINE_WINDOW } from './klineCache.js';
 import { recordSignalEvent } from '../db/signalEvents.js';
 import { SIGNAL_TYPE_REJECT } from './extremeOB.js';
 import { markDetectorOutcome } from '../pipeline/dedup.js';
@@ -39,8 +39,8 @@ export async function warmupKlines() {
   console.log(`[scanner] warming up klines for ${watchlist.length} symbols (1h + 15m)...`);
   for (const symbol of watchlist) {
     try {
-      const k1h = await fetchKlines(symbol, '1h', 100);
-      const k15m = await fetchKlines(symbol, '15m', 100);
+      const k1h = await fetchKlines(symbol, '1h', KLINE_WINDOW);
+      const k15m = await fetchKlines(symbol, '15m', KLINE_WINDOW);
       klineCache.set(symbol, { '1h': k1h, '15m': k15m });
     } catch (err) {
       console.log(`[scanner] warmup ${symbol}: ${err.message}`);
@@ -71,10 +71,10 @@ export async function scanSignals() {
 
       // Fetch if missing or insufficient
       if (!klines1h || klines1h.length < 25) {
-        klines1h = await fetchKlines(symbol, '1h', 100);
+        klines1h = await fetchKlines(symbol, '1h', KLINE_WINDOW);
       }
       if (!klines15m || klines15m.length < 25) {
-        klines15m = await fetchKlines(symbol, '15m', 100);
+        klines15m = await fetchKlines(symbol, '15m', KLINE_WINDOW);
       }
       
       // Defense in depth: indicators only ever see closed candles
@@ -197,7 +197,7 @@ export async function scanSignals() {
  */
 export function applyClosedKline({ symbol, interval, candle }) {
   const cache = klineCache.get(symbol) || { '1h': [], '15m': [] };
-  cache[interval] = mergeCandle(cache[interval] || [], candle, 100);
+  cache[interval] = mergeCandle(cache[interval] || [], candle, KLINE_WINDOW);
   klineCache.set(symbol, cache);
 }
 
@@ -221,7 +221,7 @@ export async function continuityStatus(symbol, interval, nowMs = now()) {
   if (!exchangeGaps.has(knownKey)) exchangeGaps.set(knownKey, new Set());
   const known = exchangeGaps.get(knownKey);
   const judge = (series, newlyConfirmed = []) => {
-    const c = classifyGaps(findGaps(series, intervalMs, nowMs), { intervalMs, nowMs, strictCandles: KLINE_STRICT_CONTINUITY_CANDLES, exchangeGapKeys: known });
+    const c = classifyGaps(findGaps(series, intervalMs, nowMs), { intervalMs, nowMs, strictCandles: KLINE_STRICT_CONTINUITY[interval], exchangeGapKeys: known });
     return { ...c, blocking: [...c.strict, ...c.data], newlyConfirmed };
   };
 
@@ -232,7 +232,7 @@ export async function continuityStatus(symbol, interval, nowMs = now()) {
   try {
     const fetched = await fetchKlinesSince(symbol, interval, unknown[0].afterOpenTime, intervalMs, nowMs);
     let merged = cached;
-    for (const candle of fetched) merged = mergeCandle(merged, candle, 100);
+    for (const candle of fetched) merged = mergeCandle(merged, candle, KLINE_WINDOW);
     const cache = klineCache.get(symbol) || { '1h': [], '15m': [] };
     cache[interval] = merged;
     klineCache.set(symbol, cache);

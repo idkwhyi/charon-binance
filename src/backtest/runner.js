@@ -7,12 +7,12 @@ import { planEntry } from '../pipeline/entryPlan.js';
 import { seenSignals, checkAndMarkSeen, markDetectorOutcome } from '../pipeline/dedup.js';
 import { portfolioBlock, pickCycleEntry } from '../pipeline/portfolioGates.js';
 import { utcDayStartMs, dailyLossStatus } from '../pipeline/riskControls.js';
-import { findGaps, INTERVAL_MS, gapKey, classifyGaps } from '../signals/klineCache.js';
+import { findGaps, INTERVAL_MS, gapKey, classifyGaps, KLINE_WINDOW, validateStrictContinuity } from '../signals/klineCache.js';
 import { SIGNAL_TYPE_REJECT } from '../signals/extremeOB.js';
 import { applySlippage, evaluateExit, settleExit } from '../execution/simulation.js';
 import {
   SIM_SLIPPAGE_PERCENT, SIM_TAKER_FEE_PERCENT, RISK_PERCENT_PER_TRADE, MAX_MARGIN_PERCENT_PER_TRADE,
-  DAILY_LOSS_LIMIT_PERCENT, MAX_SAME_DIRECTION_POSITIONS, KLINE_STRICT_CONTINUITY_CANDLES,
+  DAILY_LOSS_LIMIT_PERCENT, MAX_SAME_DIRECTION_POSITIONS, KLINE_STRICT_CONTINUITY,
 } from '../config.js';
 import {
   createBacktestRun, finishBacktestRun, openBacktestPosition,
@@ -26,7 +26,6 @@ const TICK_MS = 15 * 60_000;
 export let lastRunRejections = [];
 const WARMUP_1H_CANDLES = 30;
 const WARMUP_15M_CANDLES = 30;
-const KLINE_WINDOW = 100; // mirror the live scanner's rolling kline cache size
 
 /**
  * Approximate a 24h ticker (used by buildCandidate/filterCandidate) from the
@@ -119,6 +118,7 @@ export async function runBacktest(opts) {
     startingBalance = 1000,
     cacheDir = DEFAULT_CACHE_DIR,
   } = opts;
+  validateStrictContinuity(KLINE_STRICT_CONTINUITY); // same startup check as the bot
   const costs = { slippagePercent: SIM_SLIPPAGE_PERCENT, feePercent: SIM_TAKER_FEE_PERCENT };
 
   const strat = await strategyById(strategyId);
@@ -227,7 +227,7 @@ export async function runBacktest(opts) {
         // Continuity: same classifyGaps rule as the live scanner (strict last N, exchange holes accepted)
         const continuity = [['1h', window1h], ['15m', window15m]].map(([iv, w]) => [iv, classifyGaps(
           findGaps(w, INTERVAL_MS[iv], t),
-          { intervalMs: INTERVAL_MS[iv], nowMs: t, strictCandles: KLINE_STRICT_CONTINUITY_CANDLES, exchangeGapKeys: d.exchangeGaps[iv] },
+          { intervalMs: INTERVAL_MS[iv], nowMs: t, strictCandles: KLINE_STRICT_CONTINUITY[iv], exchangeGapKeys: d.exchangeGaps[iv] },
         )]);
         for (const [iv, c] of continuity) {
           for (const g of c.exchange) {

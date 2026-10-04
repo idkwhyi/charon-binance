@@ -9,6 +9,7 @@ const baseConfig = {
   RISK_PERCENT_PER_TRADE: 1, MAX_MARGIN_PERCENT_PER_TRADE: 50, DAILY_LOSS_LIMIT_PERCENT: 3,
   MAX_SAME_DIRECTION_POSITIONS: 2, MARGIN_TYPE: 'ISOLATED', TOP_GAINER_ENABLED: true,
   SIM_SLIPPAGE_PERCENT: 0.03, SIM_TAKER_FEE_PERCENT: 0.05,
+  KLINE_STRICT_CONTINUITY_CANDLES_15M: 20, KLINE_STRICT_CONTINUITY_CANDLES_1H: 6,
 };
 const strat = {
   id: 'extreme_ob', use_llm: false, llm_shadow: false, leverage: 5, max_open_positions: 2, max_hold_ms: 4 * 3_600_000,
@@ -46,6 +47,12 @@ test('flags risky or surprising settings', () => {
     'npm run migrate', 'LIQUIDATION_GUARD', 'Daily loss limit', 'Could not read watchlist']) {
     assert.ok(all.includes(needle), `missing warning: ${needle}`);
   }
+});
+
+test('an invalid strict-continuity N is flagged', () => {
+  const r = build({ config: { ...baseConfig, KLINE_STRICT_CONTINUITY_CANDLES_1H: 0 } });
+  assert.ok(r.warnings.some(w => w.includes('KLINE_STRICT_CONTINUITY_CANDLES_1H=0') && w.includes('refuse to start')));
+  assert.deepEqual(row(r, 'KLINE_STRICT_CONTINUITY_CANDLES_15M'), ['KLINE_STRICT_CONTINUITY_CANDLES_15M', 20, 'default']);
 });
 
 test('secrets are never printed, only whether they are set', () => {
