@@ -4,6 +4,7 @@ import { strategyById } from '../db/settings.js';
 import { fetchPremiumIndex } from '../enrichment/binance.js';
 import { sendPositionExit, sendTelegram } from '../telegram/send.js';
 import { executeFuturesSell, cancelAllOrders } from './futuresExecutor.js';
+import { isMaxHoldHit } from './exitRules.js';
 
 const sellInProgress = new Set();
 
@@ -56,8 +57,8 @@ export async function refreshPosition(position, autoExit = true) {
   const slHit = pricePct <= Number(position.sl_percent);
 
   // Max hold time
-  const strat = strategyById(position.strategy_id);
-  const maxHoldHit = strat?.max_hold_ms > 0 && (now() - position.opened_at_ms) >= strat.max_hold_ms;
+  const strat = await strategyById(position.strategy_id);
+  const maxHoldHit = isMaxHoldHit(strat, position.opened_at_ms, now());
 
   let exitReason = null;
   if (maxHoldHit) exitReason = 'MAX_HOLD';
