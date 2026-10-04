@@ -6,8 +6,8 @@ import { sendPositionExit, sendTelegram } from '../telegram/send.js';
 import { executeFuturesSell, cancelAllOrders } from './futuresExecutor.js';
 import { isMaxHoldHit } from './exitRules.js';
 import { exitQuantity } from './positionMath.js';
-import { applySlippage, findCandleExit, eligibleCandles, computeTradePnl, levelsFromPercents } from './simulation.js';
-import { DRY_RUN_SLIPPAGE_PERCENT, DRY_RUN_TAKER_FEE_PERCENT } from '../config.js';
+import { evaluateExit, settleExit, levelsFromPercents } from './simulation.js';
+import { SIM_SLIPPAGE_PERCENT, SIM_TAKER_FEE_PERCENT } from '../config.js';
 
 const sellInProgress = new Set();
 
@@ -139,23 +139,26 @@ async function refreshDryRunPosition(position, markPrice, autoExit) {
   const entryPrice = Number(position.entry_price);
   const levels = dryRunLevels(position);
 
-  let trigger = null;
+  // Fetch closed 1m candles at most once per minute (one new candle per minute)
+  let candles1m = [];
   const lastChecked = Number(position.last_candle_checked_ms) || Number(position.opened_at_ms);
   if (t - lastChecked >= 60_000) {
     try {
-      const candles = await fetchKlinesRange(position.symbol, '1m', lastChecked, t, { pauseMs: 0 });
-      const eligible = eligibleCandles(candles, { openedAtMs: position.opened_at_ms, lastCheckedMs: position.last_candle_checked_ms, nowMs: t });
-      trigger = findCandleExit({ direction, ...levels, liqPrice: Number(position.liq_price) || null }, eligible);
-      const checkedUpTo = trigger?.candle.closeTime ?? eligible[eligible.length - 1]?.closeTime;
-      if (checkedUpTo && !trigger) await updateLastCandleChecked(position.id, checkedUpTo);
+      candles1m = await fetchKlinesRange(position.symbol, '1m', lastChecked, t, { pauseMs: 0 });
     } catch (err) {
       console.log(`[position] #${position.id} 1m kline fetch failed: ${err.message}`);
     }
   }
 
   const strat = await strategyById(position.strategy_id);
-  if (!trigger && isMaxHoldHit(strat, position.opened_at_ms, t)) {
-    trigger = { exitReason: 'MAX_HOLD', exitPriceRaw: markPrice };
+  const { trigger, lastCheckedMs } = evaluateExit(
+    { direction, ...levels, liqPrice: Number(position.liq_price) || null,
+      openedAtMs: Number(position.opened_at_ms), lastCheckedMs: Number(position.last_candle_checked_ms) || 0 },
+    candles1m,
+    { nowMs: t, maxHoldMs: Number(strat?.max_hold_ms) || 0, maxHoldPrice: markPrice },
+  );
+  if (!trigger && lastCheckedMs > (Number(position.last_candle_checked_ms) || 0)) {
+    await updateLastCandleChecked(position.id, lastCheckedMs);
   }
 
   const isLong = direction === 'LONG';
@@ -186,15 +189,13 @@ async function exitDryRun(position, trigger, markPrice) {
   if (sellInProgress.has(position.id)) return { ...position, exitReason: null };
   sellInProgress.add(position.id);
   try {
-    const exitPrice = applySlippage(trigger.exitPriceRaw, direction, 'exit', DRY_RUN_SLIPPAGE_PERCENT);
-    const pnl = computeTradePnl({
-      direction, entryPrice, exitPrice, quantity,
+    const pnl = settleExit({
+      direction, entryPrice, quantity,
       entryMarkPrice: Number(position.entry_mark_price) || entryPrice,
-      exitPriceRaw: trigger.exitPriceRaw,
-      feePercent: DRY_RUN_TAKER_FEE_PERCENT,
       riskUsdt: Number(position.risk_usdt) || quantity * Math.abs(entryPrice - levels.stopLoss),
       marginUsdt: Number(position.entry_usdt),
-    });
+    }, trigger, { slippagePercent: SIM_SLIPPAGE_PERCENT, feePercent: SIM_TAKER_FEE_PERCENT });
+    const { exitPrice } = pnl;
     await closePosition(position.id, exitPrice, trigger.exitReason, pnl.pnlPercent, pnl.pnlUsdt, null, {
       exitPriceRaw: trigger.exitPriceRaw, entryFeeUsdt: pnl.entryFeeUsdt, exitFeeUsdt: pnl.exitFeeUsdt,
       slippageUsdt: pnl.slippageUsdt, pnlR: pnl.pnlR,

@@ -42,9 +42,10 @@ export const MAX_MARGIN_PERCENT_PER_TRADE = Number(process.env.MAX_MARGIN_PERCEN
 export const DAILY_LOSS_LIMIT_PERCENT = Number(process.env.DAILY_LOSS_LIMIT_PERCENT || 3);
 export const MAX_SAME_DIRECTION_POSITIONS = Number(process.env.MAX_SAME_DIRECTION_POSITIONS || 2);
 
-// Dry-run fill simulation (src/execution/simulation.js)
-export const DRY_RUN_SLIPPAGE_PERCENT = Number(process.env.DRY_RUN_SLIPPAGE_PERCENT || 0.03); // per side, adverse
-export const DRY_RUN_TAKER_FEE_PERCENT = Number(process.env.DRY_RUN_TAKER_FEE_PERCENT || 0.05); // per side
+// Fill simulation (src/execution/simulation.js) — the ONE cost model, used by
+// both dry-run and the backtest.
+export const SIM_SLIPPAGE_PERCENT = Number(process.env.SIM_SLIPPAGE_PERCENT || 0.03); // per side, adverse
+export const SIM_TAKER_FEE_PERCENT = Number(process.env.SIM_TAKER_FEE_PERCENT || 0.05); // per side
 
 // LLM
 export const LLM_BASE_URL = process.env.LLM_BASE_URL || 'https://api.openai.com/v1';

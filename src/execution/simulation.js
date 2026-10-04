@@ -1,7 +1,10 @@
 /**
- * Dry-run fill simulation: slippage, taker fees, and SL/TP detection on 1m
- * candle high/low. Pure functions — no DB/network — so they can be tested.
+ * Fill simulation shared by dry-run and the backtest — the single cost/exit
+ * model: slippage, taker fees, and SL/TP detection on 1m candle high/low.
+ * Pure functions — no DB/network — so they can be tested.
  */
+
+import { isMaxHoldHit } from './exitRules.js';
 
 /** Slippage always works against the position, on both entry and exit. */
 export function applySlippage(price, direction, side, slippagePercent) {
@@ -95,4 +98,56 @@ export function levelsFromPercents(direction, entryPrice, tpPercent, slPercent) 
     return { stopLoss: entryPrice * (1 + slPercent / 100), takeProfit: entryPrice * (1 + tpPercent / 100) };
   }
   return { stopLoss: entryPrice * (1 - slPercent / 100), takeProfit: entryPrice * (1 - tpPercent / 100) };
+}
+
+/**
+ * One exit evaluation, shared by the dry-run monitor and the backtest:
+ * closed 1m candles since the last check first (findCandleExit) — only up to
+ * the hold limit — then MAX_HOLD at `maxHoldPrice` (dry-run: current mark;
+ * backtest: last 1m close before the hold limit).
+ *
+ * @param {object} pos - { direction, stopLoss, takeProfit, liqPrice?, openedAtMs, lastCheckedMs? }
+ * @param {Array} candles1m - 1m candles covering at least the unchecked span
+ * @param {object} opts - { nowMs, maxHoldMs, maxHoldPrice }
+ * @returns {{ trigger: object|null, lastCheckedMs: number }}
+ */
+export function evaluateExit(pos, candles1m, { nowMs, maxHoldMs = 0, maxHoldPrice = null }) {
+  // Candles closing after the hold limit can't trigger SL/TP: MAX_HOLD came first
+  const holdEndMs = maxHoldMs > 0 ? Number(pos.openedAtMs) + maxHoldMs : Infinity;
+  const eligible = eligibleCandles(candles1m, { openedAtMs: pos.openedAtMs, lastCheckedMs: pos.lastCheckedMs, nowMs: Math.min(nowMs, holdEndMs) });
+  const hit = findCandleExit(pos, eligible);
+  if (hit) return { trigger: hit, lastCheckedMs: hit.candle.closeTime };
+
+  const lastCheckedMs = eligible.length ? eligible[eligible.length - 1].closeTime : (Number(pos.lastCheckedMs) || 0);
+  if (isMaxHoldHit({ max_hold_ms: maxHoldMs }, pos.openedAtMs, nowMs) && maxHoldPrice > 0) {
+    return { trigger: { exitReason: 'MAX_HOLD', exitPriceRaw: maxHoldPrice }, lastCheckedMs };
+  }
+  return { trigger: null, lastCheckedMs };
+}
+
+/**
+ * Settle a simulated exit: adverse slippage on the exit fill, taker fee on
+ * both sides, PnL in USDT / % of margin / R.
+ * @param {object} pos - { direction, entryPrice, entryMarkPrice, quantity, riskUsdt, marginUsdt }
+ * @param {object} trigger - { exitReason, exitPriceRaw }
+ * @param {object} costs - { slippagePercent, feePercent }
+ */
+export function settleExit(pos, trigger, { slippagePercent, feePercent }) {
+  const exitPrice = applySlippage(trigger.exitPriceRaw, pos.direction, 'exit', slippagePercent);
+  return {
+    exitReason: trigger.exitReason,
+    exitPriceRaw: trigger.exitPriceRaw,
+    exitPrice,
+    ...computeTradePnl({
+      direction: pos.direction,
+      entryPrice: pos.entryPrice,
+      entryMarkPrice: pos.entryMarkPrice ?? pos.entryPrice,
+      exitPrice,
+      exitPriceRaw: trigger.exitPriceRaw,
+      quantity: pos.quantity,
+      feePercent,
+      riskUsdt: pos.riskUsdt,
+      marginUsdt: pos.marginUsdt,
+    }),
+  };
 }

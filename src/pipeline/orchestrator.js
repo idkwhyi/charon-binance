@@ -17,7 +17,7 @@ import { resolveAvailableBalance } from './candidateBuilder.js';
 import { fetchPremiumIndex, fetchFuturesBalance } from '../enrichment/binance.js';
 import { getVirtualBalance } from '../db/virtualBalance.js';
 import { utcDayStartMs, dailyLossStatus, directionCounts, directionCapReached } from './riskControls.js';
-import { RISK_PERCENT_PER_TRADE, MAX_MARGIN_PERCENT_PER_TRADE, DRY_RUN_SLIPPAGE_PERCENT, DAILY_LOSS_LIMIT_PERCENT, MAX_SAME_DIRECTION_POSITIONS } from '../config.js';
+import { RISK_PERCENT_PER_TRADE, MAX_MARGIN_PERCENT_PER_TRADE, SIM_SLIPPAGE_PERCENT, DAILY_LOSS_LIMIT_PERCENT, MAX_SAME_DIRECTION_POSITIONS } from '../config.js';
 import { applySlippage } from '../execution/simulation.js';
 import { recordSignalEvent } from '../db/signalEvents.js';
 import { recordLlmShadow } from './llmShadow.js';
@@ -276,7 +276,7 @@ async function planAtActualPrice(candidate, decision) {
   }
   // Dry-run fills pay simulated slippage, so plan R:R/sizing at the slipped price
   const entryPrice = tradingMode() === 'dry_run'
-    ? applySlippage(markPrice, decision.direction, 'entry', DRY_RUN_SLIPPAGE_PERCENT)
+    ? applySlippage(markPrice, decision.direction, 'entry', SIM_SLIPPAGE_PERCENT)
     : markPrice;
   candidate.metrics.entryMarkPrice = markPrice;
   const strat = await activeStrategy();

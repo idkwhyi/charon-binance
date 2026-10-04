@@ -49,13 +49,14 @@ export async function openBacktestPosition(runId, pos) {
   return result.rows[0].id;
 }
 
-export async function closeBacktestPosition(id, { exitPrice, exitReason, pnlPercent, pnlUsdt, feeUsdt, closedAtMs }) {
+export async function closeBacktestPosition(id, { exitPrice, exitReason, pnlPercent, pnlUsdt, feeUsdt, slippageUsdt = 0, closedAtMs }) {
   await pgQuery(`
     UPDATE backtest_positions
     SET status = 'closed', exit_price = $1, exit_reason = $2,
-        pnl_percent = $3, pnl_usdt = $4, fee_usdt = fee_usdt + $5, closed_at_ms = $6
+        pnl_percent = $3, pnl_usdt = $4, fee_usdt = fee_usdt + $5,
+        slippage_usdt = slippage_usdt + $8, closed_at_ms = $6
     WHERE id = $7
-  `, [exitPrice, exitReason, pnlPercent, pnlUsdt, feeUsdt, closedAtMs, id]);
+  `, [exitPrice, exitReason, pnlPercent, pnlUsdt, feeUsdt, closedAtMs, id, slippageUsdt]);
 }
 
 export async function saveBacktestBalance(runId, balance) {
