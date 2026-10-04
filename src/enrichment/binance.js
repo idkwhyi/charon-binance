@@ -1,4 +1,5 @@
 import axios from 'axios';
+import { closedOnly } from '../signals/klineCache.js';
 import { BINANCE_FUTURES_BASE_URL, BINANCE_API_KEY, BINANCE_API_SECRET, JSON_HEADERS } from '../config.js';
 import { buildSignedParams, sleep } from '../utils.js';
 
@@ -32,7 +33,8 @@ export async function fetchKlines(symbol, interval = '15m', limit = 100) {
     params: { symbol, interval, limit },
   });
   // Returns: [openTime, open, high, low, close, volume, ...]
-  return res.data.map(k => ({
+  // The last element is the still-forming candle — drop anything not yet closed.
+  return closedOnly(res.data.map(k => ({
     openTime: k[0],
     open: Number(k[1]),
     high: Number(k[2]),
@@ -41,7 +43,7 @@ export async function fetchKlines(symbol, interval = '15m', limit = 100) {
     volume: Number(k[5]),
     closeTime: k[6],
     quoteVolume: Number(k[7]),
-  }));
+  })), Date.now());
 }
 
 /**
@@ -80,7 +82,7 @@ export async function fetchKlinesRange(symbol, interval, startTime, endTime, { p
     await sleep(pauseMs); // stay well under Binance's request-weight limit
   }
 
-  return all.filter(k => k.openTime <= endTime);
+  return closedOnly(all.filter(k => k.openTime <= endTime), Date.now());
 }
 
 /**

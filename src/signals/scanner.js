@@ -6,6 +6,7 @@ import { activeStrategy } from '../db/settings.js';
 import { getWatchlist } from '../db/watchlist.js';
 import { sendWatchAlert } from '../telegram/send.js';
 import { now } from '../utils.js';
+import { closedOnly, mergeCandle, parseClosedKlineMessage } from './klineCache.js';
 import { recordSignalEvent } from '../db/signalEvents.js';
 import { SIGNAL_TYPE_REJECT } from './extremeOB.js';
 
@@ -74,6 +75,10 @@ export async function scanSignals() {
         klines15m = await fetchKlines(symbol, '15m', 100);
       }
       
+      // Defense in depth: indicators only ever see closed candles
+      const t = now();
+      klines1h = closedOnly(klines1h, t);
+      klines15m = closedOnly(klines15m, t);
       klineCache.set(symbol, { '1h': klines1h, '15m': klines15m });
 
       // Fetch funding rate
@@ -166,6 +171,21 @@ export async function scanSignals() {
 }
 
 /**
+ * Put a closed WebSocket kline into the cache, replacing any copy with the
+ * same openTime (e.g. one fetched over REST) instead of appending a duplicate.
+ */
+export function applyClosedKline({ symbol, interval, candle }) {
+  const cache = klineCache.get(symbol) || { '1h': [], '15m': [] };
+  cache[interval] = mergeCandle(cache[interval] || [], candle, 100);
+  klineCache.set(symbol, cache);
+}
+
+/** Test helper: read/reset the in-memory kline cache. */
+export function _klineCacheForTest() {
+  return klineCache;
+}
+
+/**
  * Start Binance Futures WebSocket — 1h and 15m kline streams.
  */
 export async function startWebSocket() {
@@ -188,31 +208,9 @@ export async function startWebSocket() {
 
     ws.on('message', (raw) => {
       try {
-        const msg  = JSON.parse(raw);
-        const data = msg.data;
-        if (!data || data.e !== 'kline') return;
-        const k = data.k;
-        if (!k.x) return; // Only closed candles
-
-        const symbol = k.s;
-        const interval = k.i; // '1h' or '15m'
-        const candle = {
-          openTime:    k.t,
-          open:        Number(k.o),
-          high:        Number(k.h),
-          low:         Number(k.l),
-          close:       Number(k.c),
-          volume:      Number(k.v),
-          closeTime:   k.T,
-          quoteVolume: Number(k.q),
-        };
-
-        const cache = klineCache.get(symbol) || { '1h': [], '15m': [] };
-        const arr   = cache[interval] || [];
-        arr.push(candle);
-        if (arr.length > 100) arr.shift();
-        cache[interval] = arr;
-        klineCache.set(symbol, cache);
+        const parsed = parseClosedKlineMessage(raw);
+        if (!parsed) return; // not a kline, or still forming
+        applyClosedKline(parsed);
       } catch { /* ignore */ }
     });
 
