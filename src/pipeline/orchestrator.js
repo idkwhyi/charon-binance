@@ -5,7 +5,7 @@ import { storeDecision, storeBatchDecision, createTradeIntent, updateTradeIntent
 import { buildCandidate, filterCandidate } from './candidateBuilder.js';
 import { decideCandidateBatch } from './llm.js';
 import { activeStrategy } from '../db/settings.js';
-import { canOpenMorePositions, openPositionCount, openPositions, hasOpenPosition, tradingMode, createDryRunPosition, createLivePosition } from '../db/positions.js';
+import { canOpenMorePositions, openPositionCount, openPositions, hasOpenPosition, realizedPnlSince, tradingMode, createDryRunPosition, createLivePosition } from '../db/positions.js';
 import { sendTelegram, sendPositionOpen, sendTradeIntent } from '../telegram/send.js';
 import { escapeHtml } from '../format.js';
 import { executeFuturesBuy } from '../execution/futuresExecutor.js';
@@ -14,8 +14,10 @@ import { rankCandidates, shouldUseLlm } from './candidateSelector.js';
 import { signalDedupKey, DEDUP_TTL_MS } from './dedup.js';
 import { planEntry } from './entryPlan.js';
 import { resolveAvailableBalance } from './candidateBuilder.js';
-import { fetchPremiumIndex } from '../enrichment/binance.js';
-import { RISK_PERCENT_PER_TRADE, MAX_MARGIN_PERCENT_PER_TRADE, DRY_RUN_SLIPPAGE_PERCENT } from '../config.js';
+import { fetchPremiumIndex, fetchFuturesBalance } from '../enrichment/binance.js';
+import { getVirtualBalance } from '../db/virtualBalance.js';
+import { utcDayStartMs, dailyLossStatus, directionCounts, directionCapReached } from './riskControls.js';
+import { RISK_PERCENT_PER_TRADE, MAX_MARGIN_PERCENT_PER_TRADE, DRY_RUN_SLIPPAGE_PERCENT, DAILY_LOSS_LIMIT_PERCENT, MAX_SAME_DIRECTION_POSITIONS } from '../config.js';
 import { applySlippage } from '../execution/simulation.js';
 
 export const seenSignals = new Map();
@@ -29,6 +31,12 @@ export const seenSignals = new Map();
  */
 export async function processScanCycle(rawSignals) {
   const strat = await activeStrategy();
+
+  const blocked = await entryBlockReason();
+  if (blocked) {
+    console.log(`[agent] entries blocked: ${blocked} — skipping cycle of ${rawSignals.length} signal(s)`);
+    return;
+  }
 
   if (shouldUseLlm(LLM_DECISION_ENABLED, strat)) {
     for (const rawSignal of rawSignals) {
@@ -53,8 +61,12 @@ export async function processScanCycle(rawSignals) {
   }
   if (prepared.length === 0) return;
 
-  const openSymbols = new Set((await openPositions()).map(p => p.symbol));
-  const ranked = rankCandidates(prepared.map(p => p.candidate), openSymbols);
+  const open = await openPositions();
+  const openSymbols = new Set(open.map(p => p.symbol));
+  const counts = directionCounts(open);
+  const blockedDirections = ['LONG', 'SHORT'].filter(d => counts[d] >= MAX_SAME_DIRECTION_POSITIONS);
+  if (blockedDirections.length) console.log(`[agent] direction cap (${MAX_SAME_DIRECTION_POSITIONS}) reached for: ${blockedDirections.join(', ')}`);
+  const ranked = rankCandidates(prepared.map(p => p.candidate), openSymbols, blockedDirections);
   const selected = ranked[0];
   const skippedOpen = prepared.filter(p => openSymbols.has(p.candidate.symbol)).map(p => p.candidate.symbol);
   if (skippedOpen.length) console.log(`[agent] skipped (position already open): ${skippedOpen.join(', ')}`);
@@ -184,6 +196,36 @@ export async function processSignalCandidate(rawSignal, stratOverride = null) {
   }
 }
 
+let dailyLimitNoticeDay = null;
+
+/**
+ * Why new entries are currently blocked (paused / daily loss limit), or null.
+ * Exported for the Telegram /status command.
+ */
+export async function entryBlockReason() {
+  if (await boolSetting('entries_paused', false)) return 'entries paused (/pause)';
+
+  const daily = await dailyLossSnapshot();
+  if (daily.breached) {
+    const day = utcDayStartMs(now());
+    if (dailyLimitNoticeDay !== day) {
+      dailyLimitNoticeDay = day;
+      await sendTelegram(`🛑 <b>Daily loss limit hit</b> (${daily.pnlPercent.toFixed(2)}% ≤ -${DAILY_LOSS_LIMIT_PERCENT}%). No new entries until 00:00 UTC (07:00 WIB).`);
+    }
+    return `daily loss limit hit (${daily.pnlPercent.toFixed(2)}% <= -${DAILY_LOSS_LIMIT_PERCENT}%), resumes 00:00 UTC`;
+  }
+  return null;
+}
+
+/** Today's realized PnL vs start-of-UTC-day balance. */
+export async function dailyLossSnapshot() {
+  const realizedTodayUsdt = await realizedPnlSince(utcDayStartMs(now()));
+  const currentBalanceUsdt = tradingMode() === 'live'
+    ? (await fetchFuturesBalance()).walletBalance
+    : (await getVirtualBalance()).balance_usdt;
+  return { ...dailyLossStatus({ currentBalanceUsdt, realizedTodayUsdt, limitPercent: DAILY_LOSS_LIMIT_PERCENT }), realizedTodayUsdt };
+}
+
 async function planAtActualPrice(candidate, decision) {
   let markPrice;
   try {
@@ -217,6 +259,7 @@ async function planAtActualPrice(candidate, decision) {
 /** Overwrite signal-time price/levels/sizing with the entry-time plan. */
 function applyPlan(candidate, decision, plan) {
   candidate.metrics.markPrice = plan.entryPrice;
+  candidate.metrics.liqPrice = plan.liqPrice; // live overwrites with the executor's estimate at fill
   candidate.entryUsdt = plan.entryUsdt;
   candidate.riskUsdt = plan.riskUsdt;
   candidate.signals = candidate.signals || {};
@@ -233,6 +276,16 @@ async function handleApprovedBuy(selectedRow, decision, batchId, triggerCandidat
   // One position per symbol, regardless of which path (rule/LLM) chose it
   if (await hasOpenPosition(rowCandidate.symbol)) {
     console.log(`[agent] ${rowCandidate.symbol} already has an open position, skipping entry`);
+    return;
+  }
+
+  const blocked = await entryBlockReason();
+  if (blocked) {
+    console.log(`[agent] ${rowCandidate.symbol} entry blocked: ${blocked}`);
+    return;
+  }
+  if (directionCapReached(await openPositions(), decision.direction, MAX_SAME_DIRECTION_POSITIONS)) {
+    console.log(`[agent] ${rowCandidate.symbol} skipped: already ${MAX_SAME_DIRECTION_POSITIONS} open ${decision.direction} position(s)`);
     return;
   }
 

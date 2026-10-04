@@ -84,41 +84,47 @@ export async function refreshPosition(position, autoExit = true) {
   updatePositionWatermarks(position.id, highWater, lowWater, trailingArmed);
 
   if (exitReason && autoExit) {
-    if (sellInProgress.has(position.id)) return { ...position, exitReason: null };
-    sellInProgress.add(position.id);
-
-    let finalPnlPercent = pnlPercent;
-    let finalPnlUsdt = pnlUsdt;
-
-    try {
-      if (position.execution_mode === 'live') {
-        // Close exactly the quantity opened (already rounded to stepSize at entry)
-        const sell = await executeFuturesSell(position.symbol, position.direction, exitQuantity(position));
-        await cancelAllOrders(position.symbol);
-        const realPricePct = isLong
-          ? (sell.fillPrice / entryPrice - 1) * 100
-          : (1 - sell.fillPrice / entryPrice) * 100;
-        finalPnlPercent = realPricePct * Number(position.leverage || 1);
-        finalPnlUsdt = Number(position.entry_usdt) * (finalPnlPercent / 100);
-        markPrice = sell.fillPrice;
-      }
-
-      await closePosition(position.id, markPrice, exitReason, finalPnlPercent, finalPnlUsdt);
-      logTrade(position.id, position.symbol, position.direction, 'sell', markPrice,
-        finalPnlPercent, finalPnlUsdt, exitReason, { pnlPercent: finalPnlPercent, pnlUsdt: finalPnlUsdt });
-
-      const closed = { ...position, pnlPercent: finalPnlPercent, pnlUsdt: finalPnlUsdt, exitReason, exit_price: markPrice, markPrice };
-      await sendPositionExit(closed);
-    } catch (err) {
-      console.log(`[position] ${position.id} close failed: ${err.message}`);
-    } finally {
-      sellInProgress.delete(position.id);
-    }
-    return { ...position, exitReason };
+    return exitLive(position, exitReason, markPrice);
   }
 
   console.log(`[position] #${position.id} ${position.symbol} ${position.direction} | mark=${markPrice} pnl=${pnlPercent.toFixed(2)}%`);
   return { ...position, markPrice, pnlPercent, pnlUsdt, highWater, lowWater };
+}
+
+/**
+ * Close a live position with a reduce-only MARKET order for the full entry quantity.
+ */
+async function exitLive(position, exitReason, markPrice) {
+  if (sellInProgress.has(position.id)) return { ...position, exitReason: null };
+  sellInProgress.add(position.id);
+  const isLong = position.direction === 'LONG';
+  const entryPrice = Number(position.entry_price);
+  try {
+    // Close exactly the quantity opened (already rounded to stepSize at entry)
+    const sell = await executeFuturesSell(position.symbol, position.direction, exitQuantity(position));
+    await cancelAllOrders(position.symbol);
+    const exitPrice = sell.fillPrice || markPrice;
+    const realPricePct = isLong ? (exitPrice / entryPrice - 1) * 100 : (1 - exitPrice / entryPrice) * 100;
+    const pnlPercent = realPricePct * Number(position.leverage || 1);
+    const pnlUsdt = Number(position.entry_usdt) * (pnlPercent / 100);
+
+    await closePosition(position.id, exitPrice, exitReason, pnlPercent, pnlUsdt);
+    logTrade(position.id, position.symbol, position.direction, 'sell', exitPrice,
+      pnlPercent, pnlUsdt, exitReason, { pnlPercent, pnlUsdt });
+    await sendPositionExit({ ...position, pnlPercent, pnlUsdt, exitReason, exit_price: exitPrice, markPrice: exitPrice });
+    return { ...position, exitReason };
+  } catch (err) {
+    console.log(`[position] ${position.id} close failed: ${err.message}`);
+    return null;
+  } finally {
+    sellInProgress.delete(position.id);
+  }
+}
+
+function dryRunLevels(position) {
+  return Number(position.stop_loss_price) > 0 && Number(position.take_profit_price) > 0
+    ? { stopLoss: Number(position.stop_loss_price), takeProfit: Number(position.take_profit_price) }
+    : levelsFromPercents(position.direction, Number(position.entry_price), Number(position.tp_percent), Number(position.sl_percent));
 }
 
 /**
@@ -131,10 +137,7 @@ async function refreshDryRunPosition(position, markPrice, autoExit) {
   const t = now();
   const direction = position.direction;
   const entryPrice = Number(position.entry_price);
-  const quantity = exitQuantity(position);
-  const levels = Number(position.stop_loss_price) > 0 && Number(position.take_profit_price) > 0
-    ? { stopLoss: Number(position.stop_loss_price), takeProfit: Number(position.take_profit_price) }
-    : levelsFromPercents(direction, entryPrice, Number(position.tp_percent), Number(position.sl_percent));
+  const levels = dryRunLevels(position);
 
   let trigger = null;
   const lastChecked = Number(position.last_candle_checked_ms) || Number(position.opened_at_ms);
@@ -168,6 +171,18 @@ async function refreshDryRunPosition(position, markPrice, autoExit) {
     return { ...position, markPrice, pnlPercent, pnlUsdt, highWater, lowWater };
   }
 
+  return exitDryRun(position, trigger, markPrice);
+}
+
+/**
+ * Close a dry-run position at trigger.exitPriceRaw: adverse slippage on the
+ * exit, taker fee on both sides, PnL in USDT and R.
+ */
+async function exitDryRun(position, trigger, markPrice) {
+  const direction = position.direction;
+  const entryPrice = Number(position.entry_price);
+  const quantity = exitQuantity(position);
+  const levels = dryRunLevels(position);
   if (sellInProgress.has(position.id)) return { ...position, exitReason: null };
   sellInProgress.add(position.id);
   try {
@@ -197,6 +212,36 @@ async function refreshDryRunPosition(position, markPrice, autoExit) {
   } finally {
     sellInProgress.delete(position.id);
   }
+}
+
+/**
+ * Close one open position immediately at market (manual / kill switch).
+ * @returns {Promise<object|null>} closed position, or null on failure
+ */
+export async function closePositionNow(position, exitReason = 'MANUAL') {
+  const markPrice = Number((await fetchPremiumIndex(position.symbol)).markPrice);
+  if (!(markPrice > 0)) throw new Error(`no mark price for ${position.symbol}`);
+  return position.execution_mode === 'dry_run'
+    ? exitDryRun(position, { exitReason, exitPriceRaw: markPrice }, markPrice)
+    : exitLive(position, exitReason, markPrice);
+}
+
+/**
+ * Close every open position. Returns { closed: [...symbols], failed: [{symbol, error}] }.
+ */
+export async function closeAllPositions(exitReason = 'MANUAL') {
+  const closed = [];
+  const failed = [];
+  for (const pos of await openPositions()) {
+    try {
+      const res = await closePositionNow(pos, exitReason);
+      if (res?.exitReason) closed.push(pos.symbol);
+      else failed.push({ symbol: pos.symbol, error: 'close did not complete' });
+    } catch (err) {
+      failed.push({ symbol: pos.symbol, error: err.message });
+    }
+  }
+  return { closed, failed };
 }
 
 /**

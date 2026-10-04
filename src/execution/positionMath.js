@@ -29,3 +29,13 @@ export function exitQuantity(position) {
     entryPrice: position.entry_price,
   }).quantity;
 }
+
+/**
+ * Rough isolated-margin liquidation estimate (no funding, maintenance margin
+ * approximated by liquidating at 90% of the 1/leverage move). Same formula the
+ * live executor has always used.
+ */
+export function estimateLiqPrice(entryPrice, direction, leverage) {
+  const move = (1 / Number(leverage || 1)) * 0.9;
+  return direction === 'LONG' ? entryPrice * (1 - move) : entryPrice * (1 + move);
+}

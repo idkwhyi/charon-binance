@@ -1,5 +1,6 @@
 import { calculatePositionSize } from './positionSizing.js';
 import { MIN_RR, MIN_SL_DISTANCE_PCT } from '../signals/extremeOB.js';
+import { estimateLiqPrice } from '../execution/positionMath.js';
 
 /**
  * Re-plan a trade at the price it will actually be entered at.
@@ -14,7 +15,7 @@ import { MIN_RR, MIN_SL_DISTANCE_PCT } from '../signals/extremeOB.js';
  * to percentage-based SL/TP around the entry, where only side/sizing checks apply.
  *
  * @returns {{ ok: boolean, reason: string|null, entryPrice: number, stopLoss: number, takeProfit: number,
- *   rrRatio: number, slDistancePct: number, tpPercent: number, slPercent: number,
+ *   rrRatio: number, liqPrice: number, slDistancePct: number, tpPercent: number, slPercent: number,
  *   entryUsdt: number, notionalUsdt: number, riskUsdt: number, clamped: boolean }}
  */
 export function planEntry({
@@ -68,11 +69,16 @@ export function planEntry({
     return reject(`SL distance at actual entry ${slDistancePct.toFixed(2)}% < ${minSlDistancePct}%`, levels);
   }
 
+  const liqPrice = estimateLiqPrice(entryPrice, direction, leverage);
+  if (isLong ? stopLoss <= liqPrice : stopLoss >= liqPrice) {
+    return reject(`SL ${stopLoss} is not closer than estimated liquidation ${liqPrice.toFixed(8)} at ${leverage}x`, { ...levels, liqPrice });
+  }
+
   const sizing = calculatePositionSize({ availableBalanceUsdt, riskPercent, slDistancePercent: slDistancePct, leverage, maxMarginPercent });
   if (!sizing.ok) return reject(`position sizing: ${sizing.reason}`, levels);
 
   return {
-    ok: true, reason: null, entryPrice, stopLoss, takeProfit, ...levels,
+    ok: true, reason: null, entryPrice, stopLoss, takeProfit, ...levels, liqPrice,
     entryUsdt: sizing.entryUsdt, notionalUsdt: sizing.notionalUsdt, riskUsdt: sizing.riskUsdt, clamped: sizing.clamped,
   };
 }

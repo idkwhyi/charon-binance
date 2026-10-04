@@ -41,6 +41,14 @@ export async function hasOpenPosition(symbol) {
   return result.rows.length > 0;
 }
 
+export async function realizedPnlSince(sinceMs, mode = TRADING_MODE) {
+  const result = await pgQuery(
+    "SELECT COALESCE(SUM(pnl_usdt), 0) AS pnl FROM positions WHERE status = 'closed' AND closed_at_ms >= $1 AND execution_mode = $2",
+    [sinceMs, mode]
+  );
+  return Number(result.rows[0]?.pnl || 0);
+}
+
 export async function canOpenMorePositions(maxPositions = 3) {
   const count = await openPositionCount();
   return count < maxPositions;

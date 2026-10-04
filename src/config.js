@@ -31,10 +31,16 @@ export const MARGIN_TYPE = process.env.MARGIN_TYPE || 'ISOLATED'; // ISOLATED | 
 // Risk-based position sizing: $ risked per trade = availableBalance * RISK_PERCENT_PER_TRADE / 100,
 // independent of leverage. Leverage only reduces the margin locked for the resulting notional —
 // see src/pipeline/positionSizing.js.
-export const RISK_PERCENT_PER_TRADE = Number(process.env.RISK_PERCENT_PER_TRADE || 2);
+export const RISK_PERCENT_PER_TRADE = Number(process.env.RISK_PERCENT_PER_TRADE || 1);
 // Safety cap: skip a trade if the margin its risk-sized notional would require exceeds this % of
 // available balance (protects against very tight SL distances demanding an oversized position).
 export const MAX_MARGIN_PERCENT_PER_TRADE = Number(process.env.MAX_MARGIN_PERCENT_PER_TRADE || 50);
+
+// Portfolio risk gates (src/pipeline/riskControls.js)
+// Stop opening new positions once today's realized PnL <= -DAILY_LOSS_LIMIT_PERCENT
+// of the start-of-day balance; resets at 00:00 UTC (07:00 WIB).
+export const DAILY_LOSS_LIMIT_PERCENT = Number(process.env.DAILY_LOSS_LIMIT_PERCENT || 3);
+export const MAX_SAME_DIRECTION_POSITIONS = Number(process.env.MAX_SAME_DIRECTION_POSITIONS || 2);
 
 // Dry-run fill simulation (src/execution/simulation.js)
 export const DRY_RUN_SLIPPAGE_PERCENT = Number(process.env.DRY_RUN_SLIPPAGE_PERCENT || 0.03); // per side, adverse

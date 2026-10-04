@@ -27,23 +27,26 @@ export function compareCandidates(a, b) {
 }
 
 /**
- * Rank candidates and drop those whose symbol already has an open position.
+ * Rank candidates and drop those whose symbol already has an open position
+ * or whose direction is at its open-position cap.
  * @param {Array<object>} candidates - candidates that passed filters
  * @param {Set<string>|Array<string>} openSymbols - symbols with an open position
+ * @param {Set<string>|Array<string>} blockedDirections - 'LONG'/'SHORT' at cap
  * @returns {Array<object>} eligible candidates, best first
  */
-export function rankCandidates(candidates, openSymbols = new Set()) {
-  const open = openSymbols instanceof Set ? openSymbols : new Set(openSymbols);
+export function rankCandidates(candidates, openSymbols = new Set(), blockedDirections = new Set()) {
+  const open = new Set(openSymbols);
+  const blocked = new Set(blockedDirections);
   return candidates
-    .filter(c => !open.has(c.symbol))
+    .filter(c => !open.has(c.symbol) && !blocked.has(c.direction))
     .sort(compareCandidates);
 }
 
 /**
  * @returns {object|null} the single best eligible candidate, or null
  */
-export function selectCandidate(candidates, openSymbols = new Set()) {
-  return rankCandidates(candidates, openSymbols)[0] || null;
+export function selectCandidate(candidates, openSymbols = new Set(), blockedDirections = new Set()) {
+  return rankCandidates(candidates, openSymbols, blockedDirections)[0] || null;
 }
 
 /**

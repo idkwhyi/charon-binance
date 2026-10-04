@@ -8,6 +8,7 @@ import {
 } from '../config.js';
 import { buildSignedParams } from '../utils.js';
 import { fetchFuturesBalance, fetchExchangeInfo } from '../enrichment/binance.js';
+import { estimateLiqPrice } from './positionMath.js';
 
 const BASE = BINANCE_FUTURES_BASE_URL;
 
@@ -137,9 +138,7 @@ export async function executeFuturesBuy(candidate, decision) {
   }
 
   // Rough liquidation estimate (isolated margin, no funding)
-  const liqPrice = direction === 'LONG'
-    ? parseFloat((fillPrice * (1 - 1 / leverage * 0.9)).toFixed(pricePrecision))
-    : parseFloat((fillPrice * (1 + 1 / leverage * 0.9)).toFixed(pricePrecision));
+  const liqPrice = parseFloat(estimateLiqPrice(fillPrice, direction, leverage).toFixed(pricePrecision));
 
   // Place TAKE_PROFIT_MARKET order
   try {

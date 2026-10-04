@@ -110,7 +110,7 @@ export async function setActiveSetting(key, value) {
   try {
     await pgQuery(
       "INSERT INTO strategy_config (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
-      [key, String(value)]
+      [key, JSON.stringify(value)] // value column is JSONB
     );
   } catch (err) {
     console.error('[settings] setActiveSetting failed:', err.message);
@@ -120,7 +120,7 @@ export async function setActiveSetting(key, value) {
 export async function getSetting(key, fallback = null) {
   try {
     const result = await pgQuery("SELECT value FROM strategy_config WHERE key = $1", [key]);
-    return result.rows[0]?.value || fallback;
+    return result.rows[0]?.value ?? fallback;
   } catch {
     return fallback;
   }
@@ -134,7 +134,7 @@ export async function numSetting(key, fallback = 0) {
 export async function boolSetting(key, fallback = true) {
   const v = await getSetting(key);
   if (v === null) return fallback;
-  return v === 'true' || v === '1';
+  return v === true || v === 1 || v === 'true' || v === '1'; // JSONB decodes to real booleans
 }
 
 export async function allStrategyIds() {

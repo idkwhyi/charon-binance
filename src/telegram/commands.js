@@ -1,7 +1,11 @@
 import TelegramBot from 'node-telegram-bot-api';
 import {
   TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, TRADING_MODE,
+  RISK_PERCENT_PER_TRADE, DAILY_LOSS_LIMIT_PERCENT, MAX_SAME_DIRECTION_POSITIONS,
 } from '../config.js';
+import { entryBlockReason, dailyLossSnapshot } from '../pipeline/orchestrator.js';
+import { closeAllPositions } from '../execution/positions.js';
+import { directionCounts } from '../pipeline/riskControls.js';
 import { activeStrategy, allStrategyIds, setStrategySetting, setActiveSetting } from '../db/settings.js';
 import { openPositions, pnlSummary, recentClosedPositions } from '../db/positions.js';
 import { getTradeIntent, updateTradeIntentStatus } from '../db/decisions.js';
@@ -46,6 +50,10 @@ export function setupTelegram() {
       else if (cmd === '/reset_balance') await handleResetBalance(msg, args);
       else if (cmd === '/backtest') await handleBacktest(msg);
       else if (cmd === '/stats') await handleStats(msg, args);
+      else if (cmd === '/pause') await handlePause(msg);
+      else if (cmd === '/resume') await handleResume(msg);
+      else if (cmd === '/closeall') await handleCloseAll(msg, args);
+      else if (cmd === '/status') await handleStatus(msg);
     } catch (err) {
       await reply(msg, `❌ Error: ${escapeHtml(err.message)}`);
     }
@@ -90,6 +98,12 @@ async function handleHelp(msg) {
     `/debug &lt;SYMBOL&gt; — Diagnose why a symbol has no signal`,
     `/lesson &lt;text&gt; — Add a learning lesson`,
     `/lessons — List active lessons`,
+    ``,
+    `<b>🛡 Risk control:</b>`,
+    `/status — Mode, entry gate, daily PnL, open positions`,
+    `/pause — Stop opening new positions (open ones keep their exits)`,
+    `/resume — Allow new positions again`,
+    `/closeall confirm — Close ALL open positions at market now`,
     ``,
     `<b>💰 Dry Run / Backtesting:</b>`,
     `/balance — Show virtual balance (dry_run mode)`,
@@ -558,4 +572,48 @@ async function handleIntentApprove(query, intentId) {
 async function handleIntentReject(query, intentId) {
   updateTradeIntentStatus(intentId, 'rejected');
   await bot.sendMessage(query.message.chat.id, `🚫 Intent #${intentId} rejected.`, { parse_mode: 'HTML' });
+}
+
+async function handlePause(msg) {
+  await setActiveSetting('entries_paused', true);
+  await reply(msg, '⏸ <b>Entries paused.</b> No new positions will open; open positions keep their SL/TP/max-hold exits. /resume to continue.');
+}
+
+async function handleResume(msg) {
+  await setActiveSetting('entries_paused', false);
+  const still = await entryBlockReason();
+  await reply(msg, still
+    ? `▶️ Pause lifted, but entries are still blocked: ${escapeHtml(still)}`
+    : '▶️ <b>Entries resumed.</b>');
+}
+
+async function handleCloseAll(msg, args) {
+  const open = await openPositions();
+  if (open.length === 0) return reply(msg, 'No open positions.');
+  if (args[0] !== 'confirm') {
+    return reply(msg, `⚠️ This closes <b>${open.length}</b> open position(s) at market (${escapeHtml(open.map(p => p.symbol).join(', '))}).\nSend <code>/closeall confirm</code> to proceed.`);
+  }
+  const { closed, failed } = await closeAllPositions('MANUAL');
+  await reply(msg, [
+    `🧹 <b>Close all</b>: ${closed.length} closed${failed.length ? `, ${failed.length} FAILED` : ''}`,
+    ...failed.map(f => `❌ ${escapeHtml(f.symbol)}: ${escapeHtml(f.error)}`),
+  ].join('\n'));
+}
+
+async function handleStatus(msg) {
+  const open = await openPositions();
+  const counts = directionCounts(open);
+  const blocked = await entryBlockReason().catch(err => `unknown (${err.message})`);
+  const daily = await dailyLossSnapshot().catch(() => null);
+  await reply(msg, [
+    `📟 <b>Status</b>`,
+    `Mode: <code>${TRADING_MODE}</code>`,
+    `Entries: ${blocked ? `⛔ ${escapeHtml(blocked)}` : '✅ open'}`,
+    daily
+      ? `Today (UTC): ${fmtUsd(daily.realizedTodayUsdt)} (${daily.pnlPercent.toFixed(2)}% of ${fmtUsd(daily.startOfDayBalanceUsdt)}) | limit -${DAILY_LOSS_LIMIT_PERCENT}%`
+      : 'Today (UTC): unavailable',
+    `Risk/trade: ${RISK_PERCENT_PER_TRADE}% | Max same direction: ${MAX_SAME_DIRECTION_POSITIONS}`,
+    `Open: ${open.length} (LONG ${counts.LONG} / SHORT ${counts.SHORT})`,
+    ...open.map(p => `• ${escapeHtml(p.symbol)} ${p.direction} @ ${Number(p.entry_price)}`),
+  ].join('\n'));
 }
