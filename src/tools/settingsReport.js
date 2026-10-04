@@ -3,12 +3,14 @@
  * Takes already-fetched values; no DB or network access here.
  */
 
-/** Columns/tables the current code expects (migrations 004–007). */
+/** Columns/tables the current code expects (migrations 004–007, 009). */
 export const EXPECTED_SCHEMA = {
   positions: ['quantity', 'entry_mark_price', 'stop_loss_price', 'take_profit_price', 'risk_usdt',
     'exit_price_raw', 'entry_fee_usdt', 'exit_fee_usdt', 'slippage_usdt', 'pnl_r', 'last_candle_checked_ms'],
   signal_events: ['reason_code'],
   llm_shadow_decisions: ['agrees'],
+  backtest_positions: ['risk_usdt', 'pnl_r'],
+  backtest_runs: ['signal_outcomes_json'],
 };
 
 /** "table.column" entries from EXPECTED_SCHEMA missing in `presentColumns` ({ table: Set(columns) }). */

@@ -16,8 +16,9 @@ import {
 } from '../config.js';
 import {
   createBacktestRun, finishBacktestRun, openBacktestPosition,
-  closeBacktestPosition, saveBacktestBalance,
+  closeBacktestPosition, saveBacktestBalance, saveBacktestSignalOutcomes,
 } from '../db/backtest.js';
+import { aggregateOutcomes } from './report.js';
 
 const TICK_MS = 15 * 60_000;
 
@@ -175,7 +176,7 @@ export async function runBacktest(opts) {
       const s = settleExit(pos, trigger, costs);
       await closeBacktestPosition(pos.id, {
         exitPrice: s.exitPrice, exitReason: s.exitReason, pnlPercent: s.pnlPercent, pnlUsdt: s.pnlUsdt,
-        feeUsdt: s.exitFeeUsdt, slippageUsdt: Math.abs(s.exitPrice - s.exitPriceRaw) * pos.quantity, closedAtMs,
+        feeUsdt: s.exitFeeUsdt, slippageUsdt: Math.abs(s.exitPrice - s.exitPriceRaw) * pos.quantity, closedAtMs, pnlR: s.pnlR,
       });
       balance.availableBalance += pos.marginUsdt + s.pnlUsdt;
       balance.marginUsed -= pos.marginUsdt;
@@ -220,7 +221,9 @@ export async function runBacktest(opts) {
         }
 
         const fundingRate = fundingRateAt(d.funding, t);
+        const logDetector = allowedSignals.includes('extreme_ob'); // same condition as the live scanner
         for (const signal of runIndicators(window1h, window15m, fundingRate, strat)) {
+          if (!logDetector && (signal.type === SIGNAL_TYPE_REJECT || signal.type === 'extreme_ob_watch')) continue;
           if (signal.type === SIGNAL_TYPE_REJECT) {
             markDetectorOutcome(symbol, signal, window15m, t);
             reject({ symbol, direction: signal.direction }, 'detector', signal.meta.reasonCode);
@@ -291,7 +294,7 @@ export async function runBacktest(opts) {
         symbol: selected.symbol, signalType: selected.signalType, direction: selected.direction, leverage: selected.leverage,
         entryPrice: plan.entryPrice, entryUsdt: plan.entryUsdt, tpPercent: plan.tpPercent, slPercent: plan.slPercent,
         feeUsdt: entryFeeUsdt, slippageUsdt: Math.abs(plan.entryPrice - entryMarkPrice) * quantity,
-        openedAtMs: t, candidateSnapshot: selected,
+        openedAtMs: t, candidateSnapshot: selected, riskUsdt: plan.riskUsdt,
       });
       reject(selected, 'entry', 'opened', 'executed');
 
@@ -326,6 +329,7 @@ export async function runBacktest(opts) {
     }
 
     await saveBacktestBalance(runId, balance);
+    await saveBacktestSignalOutcomes(runId, aggregateOutcomes(rejections));
     await finishBacktestRun(runId, 'completed');
     lastRunRejections = rejections;
     console.log(`[backtest] run #${runId} completed | trades=${balance.totalTrades} | final balance=${balance.balanceUsdt.toFixed(2)} USDT`);

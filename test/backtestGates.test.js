@@ -1,6 +1,5 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import axios from 'axios';
 import { runBacktest } from '../src/backtest/runner.js';
 import * as runner from '../src/backtest/runner.js';
 import { portfolioBlock, pickCycleEntry } from '../src/pipeline/portfolioGates.js';
@@ -10,8 +9,7 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-const M1 = 60_000, M15 = 15 * M1, H1 = 60 * M1;
-const k = (openTime, step, o = {}) => ({ openTime, open: 100, high: 100.05, low: 99.95, close: 100, volume: 1, quoteVolume: 1e6, closeTime: openTime + step - 1, ...o });
+import { stubHistory, M1, M15, H1 } from './helpers/history.js';
 
 // ── portfolioGates (pure) ─────────────────────────────────────────────────────
 
@@ -37,28 +35,6 @@ test('pickCycleEntry: one pick, reasons for the rest', () => {
 // ── Backtest replays the same gates ───────────────────────────────────────────
 
 const D = Date.UTC(2026, 0, 10);
-
-/** plan: { SYMBOL: [{ spikeAt, stopOut }] } — 15m volume spike at spikeAt; optional SL wick 5m after entry */
-function stubHistory(plan) {
-  const original = axios.get;
-  axios.get = async (url, { params = {} } = {}) => {
-    if (url.includes('fundingRate')) return { data: [] };
-    const step = { '1m': M1, '15m': M15, '1h': H1 }[params.interval];
-    const events = plan[params.symbol] || [];
-    const rows = [];
-    for (let o = Math.ceil(params.startTime / step) * step; o <= params.endTime && rows.length < params.limit; o += step) {
-      let c = k(o, step);
-      for (const e of events) {
-        if (params.interval === '15m' && o === e.spikeAt) c = k(o, step, { open: 99.9, volume: 1000 });
-        const entryT = e.spikeAt + M15;
-        if (params.interval === '1m' && e.stopOut && o === entryT + 5 * M1) c = k(o, step, { open: 99.5, high: 99.6, low: 98, close: 98.2 });
-      }
-      rows.push([c.openTime, String(c.open), String(c.high), String(c.low), String(c.close), String(c.volume), c.closeTime, String(c.quoteVolume)]);
-    }
-    return { data: rows };
-  };
-  return () => { axios.get = original; };
-}
 
 let runSeq = 0;
 async function run(plan, { hours = 8, strat: stratOver = {} } = {}) {

@@ -38,25 +38,30 @@ export async function openBacktestPosition(runId, pos) {
     INSERT INTO backtest_positions (
       run_id, symbol, signal_type, direction, leverage,
       entry_price, entry_usdt, tp_percent, sl_percent,
-      fee_usdt, slippage_usdt, status, opened_at_ms, candidate_snapshot_json
-    ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'open',$12,$13::jsonb)
+      fee_usdt, slippage_usdt, status, opened_at_ms, candidate_snapshot_json, risk_usdt
+    ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'open',$12,$13::jsonb,$14)
     RETURNING id
   `, [
     runId, pos.symbol, pos.signalType, pos.direction, pos.leverage,
     pos.entryPrice, pos.entryUsdt, pos.tpPercent, pos.slPercent,
-    pos.feeUsdt, pos.slippageUsdt, pos.openedAtMs, json(pos.candidateSnapshot || {}),
+    pos.feeUsdt, pos.slippageUsdt, pos.openedAtMs, json(pos.candidateSnapshot || {}), pos.riskUsdt ?? null,
   ]);
   return result.rows[0].id;
 }
 
-export async function closeBacktestPosition(id, { exitPrice, exitReason, pnlPercent, pnlUsdt, feeUsdt, slippageUsdt = 0, closedAtMs }) {
+export async function closeBacktestPosition(id, { exitPrice, exitReason, pnlPercent, pnlUsdt, feeUsdt, slippageUsdt = 0, closedAtMs, pnlR = null }) {
   await pgQuery(`
     UPDATE backtest_positions
     SET status = 'closed', exit_price = $1, exit_reason = $2,
         pnl_percent = $3, pnl_usdt = $4, fee_usdt = fee_usdt + $5,
-        slippage_usdt = slippage_usdt + $8, closed_at_ms = $6
+        slippage_usdt = slippage_usdt + $8, closed_at_ms = $6, pnl_r = $9
     WHERE id = $7
-  `, [exitPrice, exitReason, pnlPercent, pnlUsdt, feeUsdt, closedAtMs, id, slippageUsdt]);
+  `, [exitPrice, exitReason, pnlPercent, pnlUsdt, feeUsdt, closedAtMs, id, slippageUsdt, pnlR]);
+}
+
+/** Aggregated signal outcomes of a run (see aggregateOutcomes in report.js). */
+export async function saveBacktestSignalOutcomes(runId, outcomes) {
+  await pgQuery('UPDATE backtest_runs SET signal_outcomes_json = $1::jsonb WHERE id = $2', [json(outcomes), runId]);
 }
 
 export async function saveBacktestBalance(runId, balance) {
