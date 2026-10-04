@@ -11,6 +11,7 @@ import { escapeHtml } from '../format.js';
 import { executeFuturesBuy } from '../execution/futuresExecutor.js';
 import { LLM_DECISION_ENABLED } from '../config.js';
 import { rankCandidates, shouldUseLlm } from './candidateSelector.js';
+import { signalDedupKey, DEDUP_TTL_MS } from './dedup.js';
 
 export const seenSignals = new Map();
 
@@ -69,10 +70,9 @@ export async function processScanCycle(rawSignals) {
  * @returns {Promise<{candidate: object, candidateId: number}|null>} null if deduped or filtered out
  */
 async function prepareCandidate(rawSignal, strat) {
-  // Deduplicate: same symbol + signal_type within 5 min
-  pruneSeen(seenSignals, 5 * 60_000);
-  const bucket = Math.floor(now() / (5 * 60_000));
-  const key = `${rawSignal.symbol}:${rawSignal.signalType}:${bucket}`;
+  // Deduplicate: same symbol + direction at most once per 15m candle
+  pruneSeen(seenSignals, DEDUP_TTL_MS);
+  const key = signalDedupKey(rawSignal);
   if (seenSignals.has(key)) return null;
   seenSignals.set(key, now());
 
