@@ -52,7 +52,7 @@ function defaultStrategy(id = 'scalp') {
   const base = {
     id,
     label: id,
-    use_llm: true,
+    use_llm: false,
     leverage: 5,
     tp_percent: 2,
     sl_percent: -1.5,
@@ -71,7 +71,7 @@ function defaultStrategy(id = 'scalp') {
     return {
       ...base,
       label: 'Extreme Order Block',
-      use_llm: true,
+      use_llm: false,
       leverage: 5,
       tp_percent: 3,       // fallback only; OB meta overrides this
       sl_percent: -1.5,    // fallback only; OB meta overrides this

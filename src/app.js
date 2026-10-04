@@ -2,8 +2,8 @@ import { validateConfig, APP_NAME, TRADING_MODE, SIGNAL_SCAN_MS, POSITION_CHECK_
 import { initPgDb } from './db/pg-connection.js';
 import { setupTelegram } from './telegram/commands.js';
 import { initBot, sendStartup, sendTelegram } from './telegram/send.js';
-import { warmupKlines, scanSignals, startWebSocket, setCandidateHandler } from './signals/scanner.js';
-import { processSignalCandidate } from './pipeline/orchestrator.js';
+import { warmupKlines, scanSignals, startWebSocket, setCycleHandler } from './signals/scanner.js';
+import { processScanCycle } from './pipeline/orchestrator.js';
 import { monitorPositions } from './execution/positions.js';
 import { startTopGainerRefresh } from './enrichment/topGainers.js';
 import { getWatchlist } from './db/watchlist.js';
@@ -21,7 +21,7 @@ export async function startCharon() {
   setupTelegram();
 
   // Wire signal handler
-  setCandidateHandler(processSignalCandidate);
+  setCycleHandler(processScanCycle);
 
   // Start top gainer auto-screener (updates watchlist every 5 min)
   startTopGainerRefresh();

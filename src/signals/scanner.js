@@ -7,7 +7,7 @@ import { getWatchlist } from '../db/watchlist.js';
 import { sendWatchAlert } from '../telegram/send.js';
 import { now } from '../utils.js';
 
-let candidateHandler = null;
+let cycleHandler = null;
 let ws = null;
 let wsReconnectTimer = null;
 const klineCache = new Map(); // symbol → { '1h': klines[], '15m': klines[] }
@@ -17,8 +17,13 @@ const klineCache = new Map(); // symbol → { '1h': klines[], '15m': klines[] }
 // This allows different OB zones on the same symbol to send separate alerts
 const watchAlertSeen = new Map();
 
-export function setCandidateHandler(fn) {
-  candidateHandler = fn;
+/**
+ * Register the handler that receives every triggered signal from one scan
+ * cycle at once (so a selector can pick across symbols, not first-come).
+ * @param {(rawSignals: object[]) => Promise<void>} fn
+ */
+export function setCycleHandler(fn) {
+  cycleHandler = fn;
 }
 
 /**
@@ -51,6 +56,7 @@ export async function scanSignals() {
 
   let totalSignals = 0;
   let totalTriggered = 0;
+  const cycleSignals = [];
 
   for (const symbol of watchlist) {
     try {
@@ -109,26 +115,28 @@ export async function scanSignals() {
       const ticker = await fetchTicker24h(symbol);
       const oi = await fetchOpenInterest(symbol).catch(() => null);
 
-      // Emit each triggered signal as candidate
+      // Collect each triggered signal; handed to the cycle handler after the loop
       for (const signal of triggered) {
-        if (candidateHandler) {
-          await candidateHandler({
-            symbol,
-            signalType: signal.type,
-            direction: signal.direction,
-            signalMeta: signal.meta,
-            ticker,
-            klines1h,
-            klines15m,
-            fundingRate,
-            openInterest: oi ? Number(oi.openInterest) : null,
-            detectedAt: now(),
-          });
-        }
+        cycleSignals.push({
+          symbol,
+          signalType: signal.type,
+          direction: signal.direction,
+          signalMeta: signal.meta,
+          ticker,
+          klines1h,
+          klines15m,
+          fundingRate,
+          openInterest: oi ? Number(oi.openInterest) : null,
+          detectedAt: now(),
+        });
       }
     } catch (err) {
       console.log(`[scanner] ${symbol}: ${err.message}`);
     }
+  }
+
+  if (cycleHandler && cycleSignals.length > 0) {
+    await cycleHandler(cycleSignals);
   }
 
   console.log(`[scanner] scan done | signals_detected=${totalSignals} | triggered=${totalTriggered}`);

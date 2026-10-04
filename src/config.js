@@ -42,6 +42,10 @@ export const LLM_API_KEY = process.env.LLM_API_KEY || '';
 export const LLM_MODEL = process.env.LLM_MODEL || 'gpt-4o-mini';
 export const LLM_TIMEOUT_MS = Number(process.env.LLM_TIMEOUT_MS || 60_000);
 export const ENABLE_LLM = process.env.ENABLE_LLM !== 'false';
+// LLM is out of the trade decision path unless explicitly enabled here AND the
+// active strategy has use_llm: true. Otherwise a deterministic selector picks
+// at most one candidate per scan cycle (src/pipeline/candidateSelector.js).
+export const LLM_DECISION_ENABLED = process.env.LLM_DECISION_ENABLED === 'true';
 export const LLM_CANDIDATE_PICK_COUNT = Number(process.env.LLM_CANDIDATE_PICK_COUNT || 10);
 
 // Intervals
