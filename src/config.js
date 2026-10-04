@@ -24,9 +24,17 @@ export const BINANCE_FUTURES_WS_URL = process.env.BINANCE_FUTURES_WS_URL || 'wss
 
 // Trading
 export const TRADING_MODE = process.env.TRADING_MODE || 'dry_run'; // dry_run | confirm | live
-export const TRADE_AMOUNT_USDT = Number(process.env.TRADE_AMOUNT_USDT || 10);
+export const TRADE_AMOUNT_USDT = Number(process.env.TRADE_AMOUNT_USDT || 10); // fallback margin if balance lookup fails
 export const LIVE_MIN_USDT_RESERVE = Number(process.env.LIVE_MIN_USDT_RESERVE || 20);
 export const MARGIN_TYPE = process.env.MARGIN_TYPE || 'ISOLATED'; // ISOLATED | CROSSED
+
+// Risk-based position sizing: $ risked per trade = availableBalance * RISK_PERCENT_PER_TRADE / 100,
+// independent of leverage. Leverage only reduces the margin locked for the resulting notional —
+// see src/pipeline/positionSizing.js.
+export const RISK_PERCENT_PER_TRADE = Number(process.env.RISK_PERCENT_PER_TRADE || 2);
+// Safety cap: skip a trade if the margin its risk-sized notional would require exceeds this % of
+// available balance (protects against very tight SL distances demanding an oversized position).
+export const MAX_MARGIN_PERCENT_PER_TRADE = Number(process.env.MAX_MARGIN_PERCENT_PER_TRADE || 50);
 
 // LLM
 export const LLM_BASE_URL = process.env.LLM_BASE_URL || 'https://api.openai.com/v1';

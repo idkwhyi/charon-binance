@@ -1,14 +1,40 @@
 import { activeStrategy } from '../db/settings.js';
 import { now, firstPositive } from '../utils.js';
-import { TRADE_AMOUNT_USDT, MARGIN_TYPE } from '../config.js';
+import { MARGIN_TYPE, RISK_PERCENT_PER_TRADE, MAX_MARGIN_PERCENT_PER_TRADE, TRADE_AMOUNT_USDT } from '../config.js';
+import { calculatePositionSize } from './positionSizing.js';
+import { tradingMode } from '../db/positions.js';
+import { fetchFuturesBalance } from '../enrichment/binance.js';
+import { getVirtualBalance } from '../db/virtualBalance.js';
+
+/**
+ * Resolve the available balance/equity to size this trade against.
+ * @param {number|null} balanceOverride - pass the current equity explicitly
+ *   (e.g. the backtest runner's running balance) to bypass the live/dry-run lookup.
+ */
+async function resolveAvailableBalance(balanceOverride) {
+  if (typeof balanceOverride === 'number') return balanceOverride;
+  try {
+    if (tradingMode() === 'live') {
+      const bal = await fetchFuturesBalance();
+      return bal.availableBalance;
+    }
+    const vb = await getVirtualBalance();
+    return vb.available_balance;
+  } catch (err) {
+    console.log(`[candidateBuilder] balance lookup failed, falling back to TRADE_AMOUNT_USDT: ${err.message}`);
+    return null;
+  }
+}
 
 /**
  * Build a structured candidate object from a raw signal event.
  * @param {object} signal
  * @param {object|null} strategyOverride - pass an explicit strategy (e.g. from the
  *   backtest runner) instead of reading the live active_strategy setting.
+ * @param {number|null} balanceOverride - pass the current equity explicitly (e.g. the
+ *   backtest runner's running balance) instead of fetching live/dry-run balance.
  */
-export async function buildCandidate(signal, strategyOverride = null) {
+export async function buildCandidate(signal, strategyOverride = null, balanceOverride = null) {
   const strat = strategyOverride || await activeStrategy();
   const ticker = signal.ticker || {};
   const markPrice = firstPositive(ticker.lastPrice, ticker.price, 0);
@@ -25,6 +51,22 @@ export async function buildCandidate(signal, strategyOverride = null) {
   const obMeta = signal.signalType === 'extreme_ob' ? (signal.signalMeta || {}) : {};
   const tpPercent = obMeta.tpPercent ?? strat.tp_percent;
   const slPercent = obMeta.slPercent ?? strat.sl_percent;
+  const slDistancePercent = Math.abs(obMeta.slDistancePct ?? slPercent);
+
+  // Risk-based position sizing: risk a fixed % of current balance regardless
+  // of leverage; notional (and margin) scale with this trade's actual SL
+  // distance. Falls back to the flat TRADE_AMOUNT_USDT margin if the balance
+  // lookup fails or sizing is otherwise invalid.
+  const availableBalanceUsdt = await resolveAvailableBalance(balanceOverride);
+  const sizing = availableBalanceUsdt !== null
+    ? calculatePositionSize({
+        availableBalanceUsdt,
+        riskPercent: RISK_PERCENT_PER_TRADE,
+        slDistancePercent,
+        leverage: strat.leverage,
+        maxMarginPercent: MAX_MARGIN_PERCENT_PER_TRADE,
+      })
+    : { entryUsdt: TRADE_AMOUNT_USDT, notionalUsdt: TRADE_AMOUNT_USDT * strat.leverage, riskUsdt: null, clamped: false, ok: true, reason: null };
 
   return {
     symbol: signal.symbol,
@@ -33,7 +75,11 @@ export async function buildCandidate(signal, strategyOverride = null) {
     strategyId: strat.id,
     leverage: strat.leverage,
     marginType: MARGIN_TYPE,
-    entryUsdt: TRADE_AMOUNT_USDT,
+    entryUsdt: sizing.entryUsdt,
+    riskUsdt: sizing.riskUsdt,
+    sizingClamped: sizing.clamped,
+    sizingRejected: !sizing.ok,
+    sizingReason: sizing.reason,
     // OB-specific trade levels (null for non-OB signals)
     obEntry:     obMeta.entry     ?? null,
     obStopLoss:  obMeta.stopLoss  ?? null,
@@ -82,6 +128,11 @@ export async function filterCandidate(candidate, strategyOverride = null) {
   // Min price (avoid dust)
   if (!markPrice || markPrice <= 0) {
     failures.push('mark price: missing or zero');
+  }
+
+  // Risk-based sizing rejected (e.g. SL too tight, required margin exceeds cap)
+  if (candidate.sizingRejected) {
+    failures.push(`position sizing: ${candidate.sizingReason}`);
   }
 
   // Min 24h volume

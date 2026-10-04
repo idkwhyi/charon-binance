@@ -212,7 +212,7 @@ export async function runBacktest(opts) {
             fundingRate, openInterest: null, detectedAt: t,
           };
 
-          const candidate = await buildCandidate(rawSignal, strat);
+          const candidate = await buildCandidate(rawSignal, strat, balance.availableBalance);
           candidate.filters = await filterCandidate(candidate, strat);
           if (!candidate.filters.passed) continue;
 

@@ -38,6 +38,9 @@ export async function processSignalCandidate(rawSignal) {
   }
 
   console.log(`[candidate] ${candidate.symbol} ${candidate.direction} via ${candidate.signalType} — passed filters`);
+  if (candidate.sizingClamped) {
+    console.log(`[candidate] ${candidate.symbol} sizing clamped: ${candidate.sizingReason}`);
+  }
 
   let batchDecision, batchId;
 

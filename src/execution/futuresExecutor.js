@@ -4,7 +4,6 @@ import {
   BINANCE_API_KEY,
   BINANCE_API_SECRET,
   LIVE_MIN_USDT_RESERVE,
-  TRADE_AMOUNT_USDT,
   MARGIN_TYPE,
 } from '../config.js';
 import { buildSignedParams } from '../utils.js';
@@ -88,9 +87,9 @@ export async function executeFuturesBuy(candidate, decision) {
   await setMarginType(symbol, marginType || MARGIN_TYPE);
   await setLeverage(symbol, leverage);
 
-  // Calculate quantity from USDT amount + leverage
+  // Calculate quantity from the risk-sized margin (candidate.entryUsdt) + leverage
   const markPrice = candidate.metrics.markPrice;
-  const notionalUsdt = TRADE_AMOUNT_USDT * leverage;
+  const notionalUsdt = candidate.entryUsdt * leverage;
   const rawQty = notionalUsdt / markPrice;
   const quantity = roundToStep(rawQty, stepSize);
 
