@@ -10,13 +10,14 @@ import { sendTelegram, sendPositionOpen, sendTradeIntent } from '../telegram/sen
 import { escapeHtml } from '../format.js';
 import { executeFuturesBuy } from '../execution/futuresExecutor.js';
 import { LLM_DECISION_ENABLED } from '../config.js';
-import { rankCandidates, shouldUseLlm } from './candidateSelector.js';
+import { shouldUseLlm } from './candidateSelector.js';
+import { portfolioBlock, pickCycleEntry } from './portfolioGates.js';
 import { checkAndMarkSeen } from './dedup.js';
 import { planEntry } from './entryPlan.js';
 import { resolveAvailableBalance } from './candidateBuilder.js';
 import { fetchPremiumIndex, fetchFuturesBalance } from '../enrichment/binance.js';
 import { getVirtualBalance } from '../db/virtualBalance.js';
-import { utcDayStartMs, dailyLossStatus, directionCounts, directionCapReached } from './riskControls.js';
+import { utcDayStartMs, dailyLossStatus, directionCapReached } from './riskControls.js';
 import { RISK_PERCENT_PER_TRADE, MAX_MARGIN_PERCENT_PER_TRADE, SIM_SLIPPAGE_PERCENT, DAILY_LOSS_LIMIT_PERCENT, MAX_SAME_DIRECTION_POSITIONS } from '../config.js';
 import { applySlippage } from '../execution/simulation.js';
 import { recordSignalEvent } from '../db/signalEvents.js';
@@ -51,11 +52,11 @@ export async function processScanCycle(rawSignals) {
     return;
   }
 
-  if (!await canOpenMorePositions(strat.max_open_positions || 3)) {
-    console.log(`[agent] max positions (${strat.max_open_positions}) reached, skipping cycle of ${rawSignals.length} signal(s)`);
+  const maxBlock = portfolioBlock({ openCount: await openPositionCount(), maxOpenPositions: strat.max_open_positions || 3 });
+  if (maxBlock) {
+    console.log(`[agent] ${maxBlock.reason}, skipping cycle of ${rawSignals.length} signal(s)`);
     for (const raw of rawSignals) {
-      await recordSignalEvent(raw, { stage: 'pipeline', outcome: 'rejected', reasonCode: 'max_positions',
-        reason: `max open positions (${strat.max_open_positions}) reached` });
+      await recordSignalEvent(raw, { stage: 'pipeline', outcome: 'rejected', reasonCode: maxBlock.code, reason: maxBlock.reason });
     }
     return;
   }
@@ -71,24 +72,13 @@ export async function processScanCycle(rawSignals) {
   }
   if (prepared.length === 0) return;
 
-  const open = await openPositions();
-  const openSymbols = new Set(open.map(p => p.symbol));
-  const counts = directionCounts(open);
-  const blockedDirections = ['LONG', 'SHORT'].filter(d => counts[d] >= MAX_SAME_DIRECTION_POSITIONS);
+  const { selected, rejections, blockedDirections } = pickCycleEntry(
+    prepared.map(p => p.candidate), await openPositions(), MAX_SAME_DIRECTION_POSITIONS);
   if (blockedDirections.length) console.log(`[agent] direction cap (${MAX_SAME_DIRECTION_POSITIONS}) reached for: ${blockedDirections.join(', ')}`);
-  const ranked = rankCandidates(prepared.map(p => p.candidate), openSymbols, blockedDirections);
-  const selected = ranked[0];
-  const skippedOpen = prepared.filter(p => openSymbols.has(p.candidate.symbol)).map(p => p.candidate.symbol);
-  if (skippedOpen.length) console.log(`[agent] skipped (position already open): ${skippedOpen.join(', ')}`);
 
-  for (const { candidate, candidateId } of prepared) {
-    if (candidate === selected) continue;
+  for (const { candidate, reasonCode, reason } of rejections) {
+    const { candidateId } = prepared.find(p => p.candidate === candidate);
     await updateCandidateStatus(candidateId, 'not_selected');
-    const [reasonCode, reason] = openSymbols.has(candidate.symbol)
-      ? ['symbol_open', 'symbol already has an open position']
-      : blockedDirections.includes(candidate.direction)
-        ? ['direction_cap', `already ${MAX_SAME_DIRECTION_POSITIONS} open ${candidate.direction} position(s)`]
-        : ['not_selected', `ranked below ${selected?.symbol} (score / R:R / volume)`];
     await recordSignalEvent(candidate, { stage: 'pipeline', outcome: 'rejected', reasonCode, reason, candidateId });
   }
   const rulePick = selected ? prepared.find(p => p.candidate === selected) : null;
@@ -242,18 +232,17 @@ let dailyLimitNoticeDay = null;
  * Why new entries are currently blocked, as { code, reason }, or null.
  */
 export async function entryBlock() {
-  if (await boolSetting('entries_paused', false)) return { code: 'entries_paused', reason: 'entries paused (/pause)' };
-
-  const daily = await dailyLossSnapshot();
-  if (daily.breached) {
+  const paused = await boolSetting('entries_paused', false);
+  const daily = paused ? null : await dailyLossSnapshot();
+  const block = portfolioBlock({ paused, daily, dailyLimitPercent: DAILY_LOSS_LIMIT_PERCENT });
+  if (block?.code === 'daily_loss_limit') {
     const day = utcDayStartMs(now());
     if (dailyLimitNoticeDay !== day) {
       dailyLimitNoticeDay = day;
       await sendTelegram(`🛑 <b>Daily loss limit hit</b> (${daily.pnlPercent.toFixed(2)}% ≤ -${DAILY_LOSS_LIMIT_PERCENT}%). No new entries until 00:00 UTC (07:00 WIB).`);
     }
-    return { code: 'daily_loss_limit', reason: `daily loss limit hit (${daily.pnlPercent.toFixed(2)}% <= -${DAILY_LOSS_LIMIT_PERCENT}%), resumes 00:00 UTC` };
   }
-  return null;
+  return block;
 }
 
 /** Human-readable entryBlock() reason, or null. Used by Telegram /status and /resume. */
