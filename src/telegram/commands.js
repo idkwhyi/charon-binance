@@ -9,6 +9,7 @@ import { directionCounts } from '../pipeline/riskControls.js';
 import { activeStrategy, allStrategyIds, setStrategySetting, setActiveSetting } from '../db/settings.js';
 import { openPositions, pnlSummary, recentClosedPositions } from '../db/positions.js';
 import { getTradeIntent, updateTradeIntentStatus } from '../db/decisions.js';
+import { fromJsonb } from '../db/pg-connection.js';
 import { createLivePosition, hasOpenPosition } from '../db/positions.js';
 import { executeFuturesBuy } from '../execution/futuresExecutor.js';
 import { openPositionsList, candidateSummary } from './format.js';
@@ -551,7 +552,7 @@ async function handleIntentApprove(query, intentId) {
   if (!intent || intent.status !== 'pending_confirmation') {
     return bot.sendMessage(query.message.chat.id, '❌ Intent not found or already processed.', { parse_mode: 'HTML' });
   }
-  const { candidate, decision } = JSON.parse(intent.intent_json);
+  const { candidate, decision } = fromJsonb(intent.intent_json); // JSONB column
   if (await hasOpenPosition(candidate.symbol)) {
     await updateTradeIntentStatus(intentId, 'rejected');
     return bot.sendMessage(query.message.chat.id, `🚫 Intent #${intentId} rejected: ${escapeHtml(candidate.symbol)} already has an open position.`, { parse_mode: 'HTML' });

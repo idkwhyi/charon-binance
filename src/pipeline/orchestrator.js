@@ -153,7 +153,10 @@ async function decideRuleBased(candidate, candidateId, strat) {
   await storeDecision(candidateId, candidate, decision);
   await updateCandidateStatus(candidateId, 'buy');
 
-  if (selfRow && await boolSetting('agent_enabled', true) !== false) {
+  if (!selfRow) {
+    await recordSignalEvent(candidate, { stage: 'pipeline', outcome: 'rejected', reasonCode: 'candidate_load_failed',
+      reason: `candidate #${candidateId} could not be read back from the DB`, candidateId });
+  } else if (await boolSetting('agent_enabled', true) !== false) {
     await handleApprovedBuy(selfRow, decision, null, candidateId);
   } else {
     await recordSignalEvent(candidate, { stage: 'pipeline', outcome: 'rejected', reasonCode: 'agent_disabled',

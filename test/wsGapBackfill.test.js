@@ -100,7 +100,7 @@ test('if REST also has the hole, the symbol is skipped this cycle and DATA_GAP i
     if (/key = \$1/.test(text) && params[0] === 'active_strategy') return [{ value: 'gap_test' }];
     if (/LIKE 'strategy:%'/.test(text)) return [{ key: 'strategy:gap_test', value: { signal_types: 'volume_spike', min_volume_spike_ratio: 3 } }];
     if (/key = \$1/.test(text) && params[0] === 'strategy:gap_test') return [{ value: { signal_types: 'volume_spike', min_volume_spike_ratio: 3 } }];
-    if (/key = \$1/.test(text)) return [{ value: '["HOLEUSDT"]' }]; // watchlist
+    if (/key = \$1/.test(text)) return [{ value: ['HOLEUSDT'] }]; // watchlist (JSONB array, as pg returns it)
     return [];
   });
   _klineCacheForTest().clear();

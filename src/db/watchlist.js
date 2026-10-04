@@ -9,7 +9,7 @@
  *   - Auto:   top gainers fetched from Binance every N minutes
  */
 
-import { query as pgQuery } from './pg-connection.js';
+import { query as pgQuery, fromJsonb } from './pg-connection.js';
 import { WATCHLIST } from '../config.js';
 
 const KEY = 'watchlist:symbols';
@@ -35,7 +35,8 @@ export async function getWatchlist() {
       cachedWatchlist = [...WATCHLIST];
     } else {
       try {
-        const parsed = JSON.parse(result.rows[0].value);
+        // value is JSONB: pg already returns an array (legacy rows may hold a JSON string)
+        const parsed = fromJsonb(result.rows[0].value);
         cachedWatchlist = Array.isArray(parsed) && parsed.length > 0 ? parsed : [...WATCHLIST];
       } catch {
         cachedWatchlist = [...WATCHLIST];
@@ -49,6 +50,11 @@ export async function getWatchlist() {
   }
 }
 
+/** Drop the 1-minute watchlist cache (tests, or after external edits). */
+export function invalidateWatchlistCache() {
+  cacheExpiry = 0;
+}
+
 /**
  * Get user-pinned symbols (always kept in watchlist).
  * @returns {Promise<string[]>}
@@ -57,7 +63,8 @@ export async function getPinnedSymbols() {
   try {
     const result = await pgQuery("SELECT value FROM strategy_config WHERE key = $1", [KEY_PINNED]);
     if (result.rows.length === 0) return [];
-    return JSON.parse(result.rows[0].value) || [];
+    const parsed = fromJsonb(result.rows[0].value);
+    return Array.isArray(parsed) ? parsed : [];
   } catch {
     return [];
   }

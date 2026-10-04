@@ -1,4 +1,4 @@
-import { query as pgQuery } from './pg-connection.js';
+import { query as pgQuery, fromJsonb } from './pg-connection.js';
 
 // Cache for frequently accessed settings
 let strategyCache = new Map();
@@ -12,8 +12,8 @@ async function ensureStrategyCache() {
     strategyCache.clear();
     for (const row of result.rows) {
       const id = row.key.replace('strategy:', '');
-      // pg already decodes JSONB columns into JS objects — don't re-parse
-      strategyCache.set(id, row.value);
+      // pg already decodes JSONB into objects; fromJsonb also accepts legacy JSON-string rows
+      strategyCache.set(id, fromJsonb(row.value));
     }
     cacheExpiry = Date.now() + 60000; // Cache for 1 minute
   } catch (err) {
@@ -41,8 +41,8 @@ export async function strategyById(id) {
     const result = await pgQuery("SELECT value FROM strategy_config WHERE key = $1", [`strategy:${id}`]);
     if (result.rows.length === 0) return defaultStrategy(id);
 
-    // pg already decodes JSONB columns into JS objects — don't re-parse
-    return { ...defaultStrategy(id), ...result.rows[0].value, id };
+    // pg already decodes JSONB into objects; fromJsonb also accepts legacy JSON-string rows
+    return { ...defaultStrategy(id), ...fromJsonb(result.rows[0].value), id };
   } catch {
     return defaultStrategy(id);
   }
@@ -118,6 +118,11 @@ export async function setActiveSetting(key, value) {
   }
 }
 
+/**
+ * Raw scalar setting as pg decodes it from JSONB (true/false, number, string).
+ * Not passed through fromJsonb: a plain string value like 'extreme_ob' is
+ * already decoded and is not itself JSON.
+ */
 export async function getSetting(key, fallback = null) {
   try {
     const result = await pgQuery("SELECT value FROM strategy_config WHERE key = $1", [key]);
