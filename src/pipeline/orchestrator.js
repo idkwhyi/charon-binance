@@ -12,6 +12,10 @@ import { executeFuturesBuy } from '../execution/futuresExecutor.js';
 import { LLM_DECISION_ENABLED } from '../config.js';
 import { rankCandidates, shouldUseLlm } from './candidateSelector.js';
 import { signalDedupKey, DEDUP_TTL_MS } from './dedup.js';
+import { planEntry } from './entryPlan.js';
+import { resolveAvailableBalance } from './candidateBuilder.js';
+import { fetchPremiumIndex } from '../enrichment/binance.js';
+import { RISK_PERCENT_PER_TRADE, MAX_MARGIN_PERCENT_PER_TRADE } from '../config.js';
 
 export const seenSignals = new Map();
 
@@ -179,6 +183,43 @@ export async function processSignalCandidate(rawSignal, stratOverride = null) {
   }
 }
 
+async function planAtActualPrice(candidate, decision) {
+  let entryPrice;
+  try {
+    entryPrice = Number((await fetchPremiumIndex(candidate.symbol)).markPrice);
+  } catch (err) {
+    return { ok: false, reason: `mark price fetch failed: ${err.message}` };
+  }
+  const strat = await activeStrategy();
+  const meta = candidate.signals?.meta || {};
+  const availableBalanceUsdt = await resolveAvailableBalance(null);
+  if (availableBalanceUsdt === null) return { ok: false, reason: 'balance lookup failed' };
+  return planEntry({
+    direction: decision.direction,
+    entryPrice,
+    stopLoss: meta.stopLoss,
+    takeProfit: meta.takeProfit,
+    fallbackTpPercent: decision.suggested_tp_percent,
+    fallbackSlPercent: decision.suggested_sl_percent,
+    availableBalanceUsdt,
+    riskPercent: RISK_PERCENT_PER_TRADE,
+    leverage: candidate.leverage || strat.leverage,
+    maxMarginPercent: MAX_MARGIN_PERCENT_PER_TRADE,
+  });
+}
+
+/** Overwrite signal-time price/levels/sizing with the entry-time plan. */
+function applyPlan(candidate, decision, plan) {
+  candidate.metrics.markPrice = plan.entryPrice;
+  candidate.entryUsdt = plan.entryUsdt;
+  candidate.riskUsdt = plan.riskUsdt;
+  candidate.signals = candidate.signals || {};
+  candidate.signals.meta = { ...(candidate.signals.meta || {}),
+    stopLoss: plan.stopLoss, takeProfit: plan.takeProfit, rrAtEntry: Number(plan.rrRatio.toFixed(2)) };
+  decision.suggested_tp_percent = plan.tpPercent;
+  decision.suggested_sl_percent = plan.slPercent;
+}
+
 async function handleApprovedBuy(selectedRow, decision, batchId, triggerCandidateId) {
   const mode = tradingMode();
   const rowCandidate = selectedRow.candidate || selectedRow;
@@ -188,6 +229,16 @@ async function handleApprovedBuy(selectedRow, decision, batchId, triggerCandidat
     console.log(`[agent] ${rowCandidate.symbol} already has an open position, skipping entry`);
     return;
   }
+
+  // Re-plan at the actual entry price (signal levels were computed from OB mid)
+  const plan = await planAtActualPrice(rowCandidate, decision);
+  if (!plan.ok) {
+    console.log(`[agent] ${rowCandidate.symbol} rejected at entry: ${plan.reason}`);
+    await updateCandidateStatus(selectedRow.id, 'rejected_at_entry');
+    await sendTelegram(`⛔ <b>Entry cancelled — ${escapeHtml(rowCandidate.symbol)} ${decision.direction}</b>\n${escapeHtml(plan.reason)}`);
+    return;
+  }
+  applyPlan(rowCandidate, decision, plan);
 
   if (mode === 'dry_run') {
     const positionId = await createDryRunPosition(selectedRow.id, rowCandidate, decision);

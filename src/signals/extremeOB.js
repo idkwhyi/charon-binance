@@ -29,9 +29,9 @@ import { confirmEntry, calculateOptimalEntry } from './entryConfirmation.js';
 
 const SIGNAL_TYPE       = 'extreme_ob';
 const SIGNAL_TYPE_WATCH = 'extreme_ob_watch'; // near-miss, not yet in zone
-const MIN_RR = 1.8;
-const MIN_SL_DISTANCE_PCT = 0.5;  // minimum 0.5% SL distance
-const MIN_TP_DISTANCE_PCT = 1.0;  // minimum 1.0% TP distance
+export const MIN_RR = 1.8;
+export const MIN_SL_DISTANCE_PCT = 0.5;  // minimum 0.5% SL distance
+export const MIN_TP_DISTANCE_PCT = 1.0;  // minimum 1.0% TP distance
 
 /**
  * Run the Extreme OB strategy check using multi-timeframe analysis.

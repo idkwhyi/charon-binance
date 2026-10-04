@@ -11,7 +11,7 @@ import { getVirtualBalance } from '../db/virtualBalance.js';
  * @param {number|null} balanceOverride - pass the current equity explicitly
  *   (e.g. the backtest runner's running balance) to bypass the live/dry-run lookup.
  */
-async function resolveAvailableBalance(balanceOverride) {
+export async function resolveAvailableBalance(balanceOverride) {
   if (typeof balanceOverride === 'number') return balanceOverride;
   try {
     if (tradingMode() === 'live') {
