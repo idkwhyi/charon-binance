@@ -63,7 +63,12 @@ export function compactCandidateForLlm(row) {
   };
 }
 
-export async function decideCandidateBatch(rows, triggerCandidateId) {
+/**
+ * @param {object} [opts]
+ * @param {number} [opts.temperature=0.6]
+ * @param {boolean} [opts.jsonMode=false] - request response_format json_object (used by shadow mode)
+ */
+export async function decideCandidateBatch(rows, triggerCandidateId, { temperature = 0.6, jsonMode = false } = {}) {
   if (!ENABLE_LLM || !LLM_API_KEY) {
     return {
       verdict: 'WATCH',
@@ -120,7 +125,8 @@ export async function decideCandidateBatch(rows, triggerCandidateId) {
   try {
     const res = await axios.post(`${LLM_BASE_URL.replace(/\/$/, '')}/chat/completions`, {
       model: LLM_MODEL,
-      temperature: 0.6,
+      temperature,
+      ...(jsonMode ? { response_format: { type: 'json_object' } } : {}),
       max_completion_tokens: 1024,
       top_p: 0.95,
       // For qwen3-32b on Groq: disable chain-of-thought to get clean JSON output

@@ -53,6 +53,7 @@ function defaultStrategy(id = 'scalp') {
     id,
     label: id,
     use_llm: false,
+    llm_shadow: false, // true: ask the LLM each cycle and only record its pick (llm_shadow_decisions)
     leverage: 5,
     tp_percent: 2,
     sl_percent: -1.5,

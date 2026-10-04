@@ -20,6 +20,7 @@ import { utcDayStartMs, dailyLossStatus, directionCounts, directionCapReached } 
 import { RISK_PERCENT_PER_TRADE, MAX_MARGIN_PERCENT_PER_TRADE, DRY_RUN_SLIPPAGE_PERCENT, DAILY_LOSS_LIMIT_PERCENT, MAX_SAME_DIRECTION_POSITIONS } from '../config.js';
 import { applySlippage } from '../execution/simulation.js';
 import { recordSignalEvent } from '../db/signalEvents.js';
+import { recordLlmShadow } from './llmShadow.js';
 
 export const seenSignals = new Map();
 
@@ -90,11 +91,15 @@ export async function processScanCycle(rawSignals) {
         : ['not_selected', `ranked below ${selected?.symbol} (score / R:R / volume)`];
     await recordSignalEvent(candidate, { stage: 'pipeline', outcome: 'rejected', reasonCode, reason, candidateId });
   }
-  if (!selected) return;
+  const rulePick = selected ? prepared.find(p => p.candidate === selected) : null;
+  if (strat.llm_shadow) {
+    // Shadow only: not awaited, result is recorded and never affects execution
+    recordLlmShadow(prepared, rulePick);
+  }
+  if (!rulePick) return;
 
-  const { candidateId } = prepared.find(p => p.candidate === selected);
   console.log(`[agent] selected ${selected.symbol} ${selected.direction} out of ${prepared.length} candidate(s)`);
-  await decideRuleBased(selected, candidateId, strat);
+  await decideRuleBased(selected, rulePick.candidateId, strat);
 }
 
 /**
