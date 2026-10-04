@@ -53,3 +53,36 @@ export function parseClosedKlineMessage(raw) {
     },
   };
 }
+
+export const INTERVAL_MS = { '1m': 60_000, '15m': 15 * 60_000, '1h': 60 * 60_000 };
+
+/** openTime of the most recent candle that has closed by nowMs. */
+export function latestClosedOpenTime(intervalMs, nowMs) {
+  return Math.floor(nowMs / intervalMs) * intervalMs - intervalMs;
+}
+
+/**
+ * Missing candles in a closed-candle series, as spans of missing openTimes.
+ * Checks gaps between consecutive candles and, if nowMs is given, a tail gap
+ * (the latest closed candle(s) not in the series yet).
+ * @returns {Array<{ afterOpenTime: number, fromOpenTime: number, toOpenTime: number, count: number }>}
+ *   afterOpenTime = openTime of the last candle present before the hole
+ */
+export function findGaps(klines, intervalMs, nowMs = null) {
+  const gaps = [];
+  for (let i = 1; i < klines.length; i++) {
+    const prev = klines[i - 1].openTime;
+    const cur = klines[i].openTime;
+    if (cur - prev > intervalMs) {
+      gaps.push({ afterOpenTime: prev, fromOpenTime: prev + intervalMs, toOpenTime: cur - intervalMs, count: (cur - prev) / intervalMs - 1 });
+    }
+  }
+  if (nowMs !== null && klines.length) {
+    const last = klines[klines.length - 1].openTime;
+    const expected = latestClosedOpenTime(intervalMs, nowMs);
+    if (expected > last) {
+      gaps.push({ afterOpenTime: last, fromOpenTime: last + intervalMs, toOpenTime: expected, count: (expected - last) / intervalMs });
+    }
+  }
+  return gaps;
+}

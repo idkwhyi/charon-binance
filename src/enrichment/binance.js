@@ -47,6 +47,30 @@ export async function fetchKlines(symbol, interval = '15m', limit = 100) {
 }
 
 /**
+ * Public: closed candles from startTime (inclusive) up to now, with `limit`
+ * sized to what is actually missing (keeps request weight low when many
+ * symbols backfill at once after a WebSocket reconnect).
+ */
+export async function fetchKlinesSince(symbol, interval, startTime, intervalMs, nowMs = Date.now()) {
+  const needed = Math.ceil((nowMs - startTime) / intervalMs) + 1;
+  const res = await axios.get(`${BASE}/fapi/v1/klines`, {
+    timeout: 8_000,
+    headers: JSON_HEADERS,
+    params: { symbol, interval, startTime, limit: Math.min(1500, Math.max(1, needed)) },
+  });
+  return closedOnly(res.data.map(k => ({
+    openTime: k[0],
+    open: Number(k[1]),
+    high: Number(k[2]),
+    low: Number(k[3]),
+    close: Number(k[4]),
+    volume: Number(k[5]),
+    closeTime: k[6],
+    quoteVolume: Number(k[7]),
+  })), nowMs);
+}
+
+/**
  * Public: fetch a full historical kline range, paginating past Binance's
  * 1500-candle-per-request limit. Used by the backtest engine to pull months
  * of data. `endTime` is inclusive; candles beyond it are trimmed off.

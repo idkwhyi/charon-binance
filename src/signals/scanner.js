@@ -1,12 +1,12 @@
 import WebSocket from 'ws';
 import { BINANCE_FUTURES_WS_URL } from '../config.js';
-import { fetchKlines, fetchPremiumIndex, fetchOpenInterest, fetchTicker24h } from '../enrichment/binance.js';
+import { fetchKlines, fetchKlinesSince, fetchPremiumIndex, fetchOpenInterest, fetchTicker24h } from '../enrichment/binance.js';
 import { runIndicators } from './indicators.js';
 import { activeStrategy } from '../db/settings.js';
 import { getWatchlist } from '../db/watchlist.js';
 import { sendWatchAlert } from '../telegram/send.js';
 import { now } from '../utils.js';
-import { closedOnly, mergeCandle, parseClosedKlineMessage } from './klineCache.js';
+import { closedOnly, mergeCandle, parseClosedKlineMessage, findGaps, INTERVAL_MS } from './klineCache.js';
 import { recordSignalEvent } from '../db/signalEvents.js';
 import { SIGNAL_TYPE_REJECT } from './extremeOB.js';
 import { markDetectorOutcome } from '../pipeline/dedup.js';
@@ -81,6 +81,23 @@ export async function scanSignals() {
       klines1h = closedOnly(klines1h, t);
       klines15m = closedOnly(klines15m, t);
       klineCache.set(symbol, { '1h': klines1h, '15m': klines15m });
+
+      // Continuity: backfill holes over REST; if still not continuous, skip this symbol this cycle
+      const gaps = {};
+      for (const interval of ['1h', '15m']) {
+        const g = await ensureContinuous(symbol, interval, t);
+        if (g.length) gaps[interval] = g;
+      }
+      if (Object.keys(gaps).length) {
+        const summary = Object.entries(gaps).map(([iv, g]) => `${iv}: ${g.reduce((n, x) => n + x.count, 0)} missing`).join(', ');
+        console.log(`[scanner] ${symbol} skipped: data gap after backfill (${summary})`);
+        recordSignalEvent({ symbol, klines15m: klineCache.get(symbol)['15m'] }, {
+          stage: 'data', outcome: 'rejected', reasonCode: 'DATA_GAP', reason: `kline gap after backfill (${summary})`, details: { gaps },
+        });
+        continue;
+      }
+      klines1h = klineCache.get(symbol)['1h'];
+      klines15m = klineCache.get(symbol)['15m'];
 
       // Fetch funding rate
       let fundingRate = null;
@@ -182,6 +199,47 @@ export function applyClosedKline({ symbol, interval, candle }) {
   klineCache.set(symbol, cache);
 }
 
+/**
+ * Make the cached series for symbol+interval continuous up to the latest
+ * closed candle: on any hole (between candles or at the tail), fetch over
+ * REST from the openTime of the last closed candle before the first hole
+ * and merge by openTime.
+ * @returns {Promise<Array>} gaps still present afterwards (empty = continuous)
+ */
+export async function ensureContinuous(symbol, interval, nowMs = now()) {
+  const intervalMs = INTERVAL_MS[interval];
+  const cached = (klineCache.get(symbol) || {})[interval] || [];
+  const gaps = findGaps(cached, intervalMs, nowMs);
+  if (!gaps.length) return [];
+
+  try {
+    const fetched = await fetchKlinesSince(symbol, interval, gaps[0].afterOpenTime, intervalMs, nowMs);
+    let merged = cached;
+    for (const candle of fetched) merged = mergeCandle(merged, candle, 100);
+    const cache = klineCache.get(symbol) || { '1h': [], '15m': [] };
+    cache[interval] = merged;
+    klineCache.set(symbol, cache);
+    return findGaps(merged, intervalMs, nowMs);
+  } catch (err) {
+    console.log(`[scanner] backfill ${symbol} ${interval} failed: ${err.message}`);
+    return gaps;
+  }
+}
+
+/** Backfill every cached symbol (called on each WebSocket (re)connect). */
+export async function backfillAll(nowMs = now()) {
+  let filled = 0;
+  for (const symbol of klineCache.keys()) {
+    for (const interval of ['1h', '15m']) {
+      const before = findGaps((klineCache.get(symbol) || {})[interval] || [], INTERVAL_MS[interval], nowMs).length;
+      if (!before) continue;
+      const after = await ensureContinuous(symbol, interval, nowMs);
+      if (!after.length) filled++;
+    }
+  }
+  if (filled) console.log(`[scanner] backfilled ${filled} series after (re)connect`);
+}
+
 /** Test helper: read/reset the in-memory kline cache. */
 export function _klineCacheForTest() {
   return klineCache;
@@ -206,6 +264,8 @@ export async function startWebSocket() {
 
     ws.on('open', () => {
       console.log(`[scanner] WebSocket connected (${watchlist.length} symbols, 1h + 15m)`);
+      // Candles that closed while disconnected never arrive over the stream
+      backfillAll().catch(err => console.log(`[scanner] backfill after connect failed: ${err.message}`));
     });
 
     ws.on('message', (raw) => {
