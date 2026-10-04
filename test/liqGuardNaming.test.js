@@ -12,8 +12,11 @@ function files(dir, exts) {
 }
 
 test('code and reports only use LIQ_GUARD', () => {
-  const offenders = [...files('src', ['.js']), 'view_performance.js', 'run_backtest.js']
-    .filter(f => readFileSync(f, 'utf8').includes('LIQUIDATION_GUARD'));
+  // The old name may only appear as a legacy-data check (show_settings / settingsReport),
+  // never as an exit reason that is set, compared against, or reported.
+  const legacyCheckOnly = new Set(['src/tools/settingsReport.js', 'show_settings.js']);
+  const offenders = [...files('src', ['.js']), 'view_performance.js', 'run_backtest.js', 'show_settings.js']
+    .filter(f => !legacyCheckOnly.has(f) && readFileSync(f, 'utf8').includes('LIQUIDATION_GUARD'));
   assert.deepEqual(offenders, []);
 });
 
