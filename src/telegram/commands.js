@@ -5,7 +5,7 @@ import {
 import { activeStrategy, allStrategyIds, setStrategySetting, setActiveSetting } from '../db/settings.js';
 import { openPositions, pnlSummary, recentClosedPositions } from '../db/positions.js';
 import { getTradeIntent, updateTradeIntentStatus } from '../db/decisions.js';
-import { createLivePosition } from '../db/positions.js';
+import { createLivePosition, hasOpenPosition } from '../db/positions.js';
 import { executeFuturesBuy } from '../execution/futuresExecutor.js';
 import { openPositionsList, candidateSummary } from './format.js';
 import { sendTelegram, sendPositionOpen } from './send.js';
@@ -538,8 +538,12 @@ async function handleIntentApprove(query, intentId) {
   if (!intent || intent.status !== 'pending_confirmation') {
     return bot.sendMessage(query.message.chat.id, '❌ Intent not found or already processed.', { parse_mode: 'HTML' });
   }
-  await updateTradeIntentStatus(intentId, 'approved');
   const { candidate, decision } = JSON.parse(intent.intent_json);
+  if (await hasOpenPosition(candidate.symbol)) {
+    await updateTradeIntentStatus(intentId, 'rejected');
+    return bot.sendMessage(query.message.chat.id, `🚫 Intent #${intentId} rejected: ${escapeHtml(candidate.symbol)} already has an open position.`, { parse_mode: 'HTML' });
+  }
+  await updateTradeIntentStatus(intentId, 'approved');
   try {
     const { orderId, liqPrice } = await executeFuturesBuy(candidate, decision);
     candidate.metrics.liqPrice = liqPrice;

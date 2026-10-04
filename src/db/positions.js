@@ -34,6 +34,11 @@ export async function openPositionCount() {
   }
 }
 
+export async function hasOpenPosition(symbol) {
+  const result = await pgQuery("SELECT 1 FROM positions WHERE status = 'open' AND symbol = $1 LIMIT 1", [symbol]);
+  return result.rows.length > 0;
+}
+
 export async function canOpenMorePositions(maxPositions = 3) {
   const count = await openPositionCount();
   return count < maxPositions;

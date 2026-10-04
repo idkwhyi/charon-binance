@@ -5,7 +5,7 @@ import { storeDecision, storeBatchDecision, createTradeIntent, updateTradeIntent
 import { buildCandidate, filterCandidate } from './candidateBuilder.js';
 import { decideCandidateBatch } from './llm.js';
 import { activeStrategy } from '../db/settings.js';
-import { canOpenMorePositions, openPositionCount, openPositions, tradingMode, createDryRunPosition, createLivePosition } from '../db/positions.js';
+import { canOpenMorePositions, openPositionCount, openPositions, hasOpenPosition, tradingMode, createDryRunPosition, createLivePosition } from '../db/positions.js';
 import { sendTelegram, sendPositionOpen, sendTradeIntent } from '../telegram/send.js';
 import { escapeHtml } from '../format.js';
 import { executeFuturesBuy } from '../execution/futuresExecutor.js';
@@ -182,6 +182,12 @@ export async function processSignalCandidate(rawSignal, stratOverride = null) {
 async function handleApprovedBuy(selectedRow, decision, batchId, triggerCandidateId) {
   const mode = tradingMode();
   const rowCandidate = selectedRow.candidate || selectedRow;
+
+  // One position per symbol, regardless of which path (rule/LLM) chose it
+  if (await hasOpenPosition(rowCandidate.symbol)) {
+    console.log(`[agent] ${rowCandidate.symbol} already has an open position, skipping entry`);
+    return;
+  }
 
   if (mode === 'dry_run') {
     const positionId = await createDryRunPosition(selectedRow.id, rowCandidate, decision);

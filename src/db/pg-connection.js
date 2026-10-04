@@ -44,6 +44,14 @@ export async function initPgDb() {
 }
 
 /**
+ * Swap in a pool-like object ({ query(text, params) }). Used by unit tests to
+ * run DB helpers against a fake pool without a PostgreSQL server.
+ */
+export function setPool(p) {
+  pool = p;
+}
+
+/**
  * Execute a query
  * @param {string} text - SQL query
  * @param {Array} params - Query parameters
