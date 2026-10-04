@@ -223,11 +223,19 @@ export async function startWebSocket() {
     ws.on('close', () => {
       console.log('[scanner] WebSocket closed, reconnecting in 5s...');
       clearTimeout(wsReconnectTimer);
-      wsReconnectTimer = setTimeout(connect, 5_000);
+      wsReconnectTimer = setTimeout(connectSafely, 5_000);
     });
   }
 
-  connect();
+  function connectSafely() {
+    connect().catch(err => {
+      console.log(`[scanner] WebSocket connect failed: ${err.message}, retrying in 5s...`);
+      clearTimeout(wsReconnectTimer);
+      wsReconnectTimer = setTimeout(connectSafely, 5_000);
+    });
+  }
+
+  connectSafely();
 }
 
 /**

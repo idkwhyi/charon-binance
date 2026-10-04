@@ -114,7 +114,7 @@ async function handleHelp(msg) {
 }
 
 async function handleMenu(msg) {
-  const strat = activeStrategy();
+  const strat = await activeStrategy();
   await bot.sendMessage(msg.chat.id, [
     `📊 <b>Charon Binance Futures</b>`,
     `Mode: <code>${TRADING_MODE}</code> | Strategy: <code>${strat.id}</code>`,
@@ -133,12 +133,12 @@ async function handleMenu(msg) {
 async function handleStrategy(msg, args) {
   if (args[0]) {
     const id = args[0].toLowerCase();
-    const all = allStrategyIds();
+    const all = await allStrategyIds();
     if (!all.includes(id)) {
       return reply(msg, `❌ Unknown strategy. Available: ${all.join(', ')}`);
     }
-    setActiveSetting('active_strategy', id);
-    const strat = activeStrategy();
+    await setActiveSetting('active_strategy', id);
+    const strat = await activeStrategy();
     return reply(msg, [
       `✅ Strategy switched to <b>${id}</b>`,
       `Leverage: ${strat.leverage}x | TP: ${fmtPct(strat.tp_percent)} | SL: ${fmtPct(strat.sl_percent)}`,
@@ -146,8 +146,8 @@ async function handleStrategy(msg, args) {
     ].join('\n'));
   }
 
-  const strat = activeStrategy();
-  const all = allStrategyIds();
+  const strat = await activeStrategy();
+  const all = await allStrategyIds();
   const buttons = all.map(id => [{ text: id === strat.id ? `✅ ${id}` : id, callback_data: `strategy_select:${id}` }]);
   await bot.sendMessage(msg.chat.id, `Current: <b>${strat.id}</b>\nSelect strategy:`, {
     parse_mode: 'HTML',
@@ -161,9 +161,8 @@ async function handleStratset(msg, args) {
     return reply(msg, 'Usage: /stratset &lt;strategy_id&gt; &lt;key&gt; &lt;value&gt;');
   }
   const value = valueParts.join(' ');
-  setStrategySetting(stratId, key, value);
-  const strat = activeStrategy();
-  reply(msg, `✅ <b>${stratId}.${key}</b> = <code>${escapeHtml(value)}</code>`);
+  await setStrategySetting(stratId, key, value);
+  await reply(msg, `✅ <b>${stratId}.${key}</b> = <code>${escapeHtml(value)}</code>`);
 }
 
 async function handlePositions(msg) {
@@ -185,8 +184,8 @@ async function handlePnl(msg) {
 }
 
 async function handleWatchlist(msg) {
-  const watchlist = getWatchlist();
-  const pinned    = getPinnedSymbols();
+  const watchlist = await getWatchlist();
+  const pinned    = await getPinnedSymbols();
   const lines = watchlist.map(s => {
     const tag = pinned.includes(s) ? ' 📌' : ' 🤖';
     return `• <code>${s}</code>${tag}`;
@@ -202,7 +201,7 @@ async function handleWatchlist(msg) {
 async function handleWatch(msg, args) {
   if (!args[0]) return reply(msg, 'Usage: /watch &lt;SYMBOL&gt;\nContoh: /watch SOLUSDT');
   const symbol = args[0].toUpperCase().trim();
-  const { added } = addToWatchlist(symbol);
+  const { added } = await addToWatchlist(symbol);
   if (!added) return reply(msg, `ℹ️ <code>${symbol}</code> sudah ada di watchlist.`);
 
   // Warmup klines for new symbol
@@ -223,7 +222,7 @@ async function handleWatch(msg, args) {
 async function handleUnwatch(msg, args) {
   if (!args[0]) return reply(msg, 'Usage: /unwatch &lt;SYMBOL&gt;\nContoh: /unwatch SOLUSDT');
   const symbol = args[0].toUpperCase().trim();
-  const { removed } = removeFromWatchlist(symbol);
+  const { removed } = await removeFromWatchlist(symbol);
   if (!removed) return reply(msg, `ℹ️ <code>${symbol}</code> tidak ada di watchlist.`);
   reconnectWebSocket();
   await reply(msg, `🗑️ <code>${symbol}</code> dihapus dari watchlist.\nWebSocket reconnecting...`);
@@ -233,7 +232,7 @@ async function handleTopGainers(msg) {
   await reply(msg, '📡 Fetching top gainers dari Binance...');
   try {
     const after = await refreshTopGainers(false);
-    const watchlist = getWatchlist();
+    const watchlist = await getWatchlist();
     await reply(msg, [
       `✅ <b>Top Gainers Refreshed</b>`,
       `Watchlist sekarang: <b>${watchlist.length} symbols</b>`,
@@ -537,10 +536,10 @@ async function handleStatsConfidenceBreakdown(msg, dimension) {
 }
 
 async function handleStrategySelect(query, id) {
-  const all = allStrategyIds();
+  const all = await allStrategyIds();
   if (!all.includes(id)) return;
-  setActiveSetting('active_strategy', id);
-  const strat = activeStrategy();
+  await setActiveSetting('active_strategy', id);
+  const strat = await activeStrategy();
   await bot.sendMessage(query.message.chat.id, [
     `✅ Switched to <b>${id}</b>`,
     `Leverage: ${strat.leverage}x | TP: ${fmtPct(strat.tp_percent)} | SL: ${fmtPct(strat.sl_percent)}`,
@@ -570,7 +569,7 @@ async function handleIntentApprove(query, intentId) {
 }
 
 async function handleIntentReject(query, intentId) {
-  updateTradeIntentStatus(intentId, 'rejected');
+  await updateTradeIntentStatus(intentId, 'rejected');
   await bot.sendMessage(query.message.chat.id, `🚫 Intent #${intentId} rejected.`, { parse_mode: 'HTML' });
 }
 

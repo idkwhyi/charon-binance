@@ -4,7 +4,7 @@ import { now, strictJsonFromText } from '../utils.js';
 import { numSetting } from '../db/settings.js';
 import { query as pgQuery } from '../db/pg-connection.js';
 
-export function normalizeDecision(parsed, fallbackReason = '') {
+export async function normalizeDecision(parsed, fallbackReason = '') {
   const rawVerdict = String(parsed?.verdict || '').toUpperCase();
   const verdict = ['BUY_LONG', 'BUY_SHORT', 'WATCH', 'PASS'].includes(rawVerdict) ? rawVerdict : 'WATCH';
   let direction = null;
@@ -17,8 +17,8 @@ export function normalizeDecision(parsed, fallbackReason = '') {
     confidence: Math.max(0, Math.min(100, Number(parsed?.confidence) || 0)),
     reason: String(parsed?.reason || fallbackReason).slice(0, 1000),
     risks: Array.isArray(parsed?.risks) ? parsed.risks.map(String).slice(0, 8) : [],
-    suggested_tp_percent: Number(parsed?.suggested_tp_percent) || numSetting('default_tp_percent', 2),
-    suggested_sl_percent: Number(parsed?.suggested_sl_percent) || numSetting('default_sl_percent', -1.5),
+    suggested_tp_percent: Number(parsed?.suggested_tp_percent) || await numSetting('default_tp_percent', 2),
+    suggested_sl_percent: Number(parsed?.suggested_sl_percent) || await numSetting('default_sl_percent', -1.5),
     raw: parsed,
   };
 }
@@ -78,8 +78,8 @@ export async function decideCandidateBatch(rows, triggerCandidateId, { temperatu
       selected_symbol: null,
       reason: 'LLM disabled or LLM_API_KEY missing.',
       risks: ['no_llm_decision'],
-      suggested_tp_percent: numSetting('default_tp_percent', 2),
-      suggested_sl_percent: numSetting('default_sl_percent', -1.5),
+      suggested_tp_percent: await numSetting('default_tp_percent', 2),
+      suggested_sl_percent: await numSetting('default_sl_percent', -1.5),
       raw: null,
     };
   }
@@ -147,7 +147,7 @@ export async function decideCandidateBatch(rows, triggerCandidateId, { temperatu
     const content = res.data?.choices?.[0]?.message?.content || '';
     // Use thinking-model-aware parser to strip <think> blocks if present
     const parsed = parseThinkingModelResponse(content);
-    const decision = normalizeDecision(parsed);
+    const decision = await normalizeDecision(parsed);
 
     const selectedId = Number(parsed.selected_candidate_id);
     const selectedSymbol = String(parsed.selected_symbol || '');
@@ -172,8 +172,8 @@ export async function decideCandidateBatch(rows, triggerCandidateId, { temperatu
       selected_symbol: null,
       reason: `LLM failed: ${errMsg}`,
       risks: ['llm_error'],
-      suggested_tp_percent: numSetting('default_tp_percent', 2),
-      suggested_sl_percent: numSetting('default_sl_percent', -1.5),
+      suggested_tp_percent: await numSetting('default_tp_percent', 2),
+      suggested_sl_percent: await numSetting('default_sl_percent', -1.5),
       raw: { error: errMsg },
     };
   }
