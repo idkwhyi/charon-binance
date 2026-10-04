@@ -42,6 +42,11 @@ export const MAX_MARGIN_PERCENT_PER_TRADE = Number(process.env.MAX_MARGIN_PERCEN
 export const DAILY_LOSS_LIMIT_PERCENT = Number(process.env.DAILY_LOSS_LIMIT_PERCENT || 3);
 export const MAX_SAME_DIRECTION_POSITIONS = Number(process.env.MAX_SAME_DIRECTION_POSITIONS || 2);
 
+// Kline continuity (src/signals/klineCache.js classifyGaps): the last N candles per
+// timeframe must be continuous with no exceptions; older holes are accepted only
+// when the exchange confirms it has no candles there. Same rule live and backtest.
+export const KLINE_STRICT_CONTINUITY_CANDLES = Number(process.env.KLINE_STRICT_CONTINUITY_CANDLES || 20);
+
 // Fill simulation (src/execution/simulation.js) — the ONE cost model, used by
 // both dry-run and the backtest.
 export const SIM_SLIPPAGE_PERCENT = Number(process.env.SIM_SLIPPAGE_PERCENT || 0.03); // per side, adverse

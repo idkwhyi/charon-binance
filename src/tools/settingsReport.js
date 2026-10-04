@@ -87,6 +87,7 @@ export function buildSettingsReport({ config, env, strat, strategyRow, activeStr
         s('min_open_interest_usdt', 'min_open_interest_usdt', v => v ?? 'none'),
         ['Watchlist', extra.watchlist ? `${extra.watchlist.length}: ${extra.watchlist.join(', ')}` : 'unavailable', 'db/env'],
         ['TOP_GAINER_ENABLED', yesNo(config.TOP_GAINER_ENABLED), fromEnv('TOP_GAINER_ENABLED')],
+        ['KLINE_STRICT_CONTINUITY_CANDLES', config.KLINE_STRICT_CONTINUITY_CANDLES, fromEnv('KLINE_STRICT_CONTINUITY_CANDLES')],
       ],
     },
     {

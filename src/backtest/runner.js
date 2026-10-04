@@ -7,12 +7,12 @@ import { planEntry } from '../pipeline/entryPlan.js';
 import { seenSignals, checkAndMarkSeen, markDetectorOutcome } from '../pipeline/dedup.js';
 import { portfolioBlock, pickCycleEntry } from '../pipeline/portfolioGates.js';
 import { utcDayStartMs, dailyLossStatus } from '../pipeline/riskControls.js';
-import { findGaps, INTERVAL_MS } from '../signals/klineCache.js';
+import { findGaps, INTERVAL_MS, gapKey, classifyGaps } from '../signals/klineCache.js';
 import { SIGNAL_TYPE_REJECT } from '../signals/extremeOB.js';
 import { applySlippage, evaluateExit, settleExit } from '../execution/simulation.js';
 import {
   SIM_SLIPPAGE_PERCENT, SIM_TAKER_FEE_PERCENT, RISK_PERCENT_PER_TRADE, MAX_MARGIN_PERCENT_PER_TRADE,
-  DAILY_LOSS_LIMIT_PERCENT, MAX_SAME_DIRECTION_POSITIONS,
+  DAILY_LOSS_LIMIT_PERCENT, MAX_SAME_DIRECTION_POSITIONS, KLINE_STRICT_CONTINUITY_CANDLES,
 } from '../config.js';
 import {
   createBacktestRun, finishBacktestRun, openBacktestPosition,
@@ -151,7 +151,16 @@ export async function runBacktest(opts) {
         cached('1m', dateFromMs, Math.min(exitDataEndMs, Date.now())),
         fetchFundingRateHistory(symbol, dateFromMs - warmupMs1h, dateToMs).catch(() => []),
       ]);
-      data[symbol] = { klines1h, klines15m, klines1m, funding, ptr1h: 0, ptr15m: 0 };
+      data[symbol] = {
+        klines1h, klines15m, klines1m, funding, ptr1h: 0, ptr15m: 0,
+        // Every candle here came from Binance for the full range, so a hole with candles on
+        // both sides is exchange-confirmed — the same condition live uses (confirmExchangeGaps).
+        exchangeGaps: {
+          '1h': new Set(findGaps(klines1h, INTERVAL_MS['1h']).map(gapKey)),
+          '15m': new Set(findGaps(klines15m, INTERVAL_MS['15m']).map(gapKey)),
+        },
+        loggedExchangeGaps: new Set(),
+      };
     }
 
     const balance = {
@@ -215,7 +224,20 @@ export async function runBacktest(opts) {
 
         const window15m = d.klines15m.slice(Math.max(0, d.ptr15m - KLINE_WINDOW), d.ptr15m);
         const window1h = d.klines1h.slice(Math.max(0, d.ptr1h - KLINE_WINDOW), d.ptr1h);
-        if (findGaps(window15m, INTERVAL_MS['15m'], t).length || findGaps(window1h, INTERVAL_MS['1h'], t).length) {
+        // Continuity: same classifyGaps rule as the live scanner (strict last N, exchange holes accepted)
+        const continuity = [['1h', window1h], ['15m', window15m]].map(([iv, w]) => [iv, classifyGaps(
+          findGaps(w, INTERVAL_MS[iv], t),
+          { intervalMs: INTERVAL_MS[iv], nowMs: t, strictCandles: KLINE_STRICT_CONTINUITY_CANDLES, exchangeGapKeys: d.exchangeGaps[iv] },
+        )]);
+        for (const [iv, c] of continuity) {
+          for (const g of c.exchange) {
+            const key = `${iv}:${gapKey(g)}`;
+            if (d.loggedExchangeGaps.has(key)) continue;
+            d.loggedExchangeGaps.add(key);
+            reject({ symbol }, 'data', 'EXCHANGE_GAP', 'accepted');
+          }
+        }
+        if (continuity.some(([, c]) => !c.ok)) {
           reject({ symbol }, 'data', 'DATA_GAP');
           continue;
         }

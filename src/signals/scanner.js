@@ -1,12 +1,12 @@
 import WebSocket from 'ws';
-import { BINANCE_FUTURES_WS_URL } from '../config.js';
+import { BINANCE_FUTURES_WS_URL, KLINE_STRICT_CONTINUITY_CANDLES } from '../config.js';
 import { fetchKlines, fetchKlinesSince, fetchPremiumIndex, fetchOpenInterest, fetchTicker24h } from '../enrichment/binance.js';
 import { runIndicators } from './indicators.js';
 import { activeStrategy } from '../db/settings.js';
 import { getWatchlist } from '../db/watchlist.js';
 import { sendWatchAlert } from '../telegram/send.js';
 import { now } from '../utils.js';
-import { closedOnly, mergeCandle, parseClosedKlineMessage, findGaps, INTERVAL_MS } from './klineCache.js';
+import { closedOnly, mergeCandle, parseClosedKlineMessage, findGaps, INTERVAL_MS, gapKey, confirmExchangeGaps, classifyGaps } from './klineCache.js';
 import { recordSignalEvent } from '../db/signalEvents.js';
 import { SIGNAL_TYPE_REJECT } from './extremeOB.js';
 import { markDetectorOutcome } from '../pipeline/dedup.js';
@@ -15,6 +15,7 @@ let cycleHandler = null;
 let ws = null;
 let wsReconnectTimer = null;
 const klineCache = new Map(); // symbol → { '1h': klines[], '15m': klines[] }
+const exchangeGaps = new Map(); // `${symbol}:${interval}` → Set(gapKey) confirmed missing on Binance
 
 // Deduplicate watch alerts — same symbol+direction+OB zone max once per 30 min
 // Key format: "SYMBOL:DIRECTION:OBLOW-OBHIGH"
@@ -90,6 +91,7 @@ export async function scanSignals() {
       }
       if (Object.keys(gaps).length) {
         const summary = Object.entries(gaps).map(([iv, g]) => `${iv}: ${g.reduce((n, x) => n + x.count, 0)} missing`).join(', ');
+        // strict last-N window or an unconfirmed hole — see classifyGaps
         console.log(`[scanner] ${symbol} skipped: data gap after backfill (${summary})`);
         recordSignalEvent({ symbol, klines15m: klineCache.get(symbol)['15m'] }, {
           stage: 'data', outcome: 'rejected', reasonCode: 'DATA_GAP', reason: `kline gap after backfill (${summary})`, details: { gaps },
@@ -201,29 +203,61 @@ export function applyClosedKline({ symbol, interval, candle }) {
 
 /**
  * Make the cached series for symbol+interval continuous up to the latest
- * closed candle: on any hole (between candles or at the tail), fetch over
- * REST from the openTime of the last closed candle before the first hole
- * and merge by openTime.
- * @returns {Promise<Array>} gaps still present afterwards (empty = continuous)
+ * closed candle. Holes not already known to be exchange-side are backfilled
+ * over REST from the openTime of the last closed candle before the first one
+ * and merged by openTime. Holes the response confirms Binance doesn't have
+ * are remembered (logged once as EXCHANGE_GAP) and not refetched.
+ * The result is judged by classifyGaps (strict last-N rule, shared with the
+ * backtest).
+ * @returns {Promise<Array>} blocking holes (empty = usable this cycle)
  */
 export async function ensureContinuous(symbol, interval, nowMs = now()) {
+  return (await continuityStatus(symbol, interval, nowMs)).blocking;
+}
+
+export async function continuityStatus(symbol, interval, nowMs = now()) {
   const intervalMs = INTERVAL_MS[interval];
+  const knownKey = `${symbol}:${interval}`;
+  if (!exchangeGaps.has(knownKey)) exchangeGaps.set(knownKey, new Set());
+  const known = exchangeGaps.get(knownKey);
+  const judge = (series, newlyConfirmed = []) => {
+    const c = classifyGaps(findGaps(series, intervalMs, nowMs), { intervalMs, nowMs, strictCandles: KLINE_STRICT_CONTINUITY_CANDLES, exchangeGapKeys: known });
+    return { ...c, blocking: [...c.strict, ...c.data], newlyConfirmed };
+  };
+
   const cached = (klineCache.get(symbol) || {})[interval] || [];
-  const gaps = findGaps(cached, intervalMs, nowMs);
-  if (!gaps.length) return [];
+  const unknown = findGaps(cached, intervalMs, nowMs).filter(g => !known.has(gapKey(g)));
+  if (!unknown.length) return judge(cached);
 
   try {
-    const fetched = await fetchKlinesSince(symbol, interval, gaps[0].afterOpenTime, intervalMs, nowMs);
+    const fetched = await fetchKlinesSince(symbol, interval, unknown[0].afterOpenTime, intervalMs, nowMs);
     let merged = cached;
     for (const candle of fetched) merged = mergeCandle(merged, candle, 100);
     const cache = klineCache.get(symbol) || { '1h': [], '15m': [] };
     cache[interval] = merged;
     klineCache.set(symbol, cache);
-    return findGaps(merged, intervalMs, nowMs);
+
+    const remaining = findGaps(merged, intervalMs, nowMs).filter(g => !known.has(gapKey(g)));
+    const newlyConfirmed = confirmExchangeGaps(remaining, fetched);
+    for (const g of newlyConfirmed) {
+      known.add(gapKey(g));
+      console.log(`[scanner] ${symbol} ${interval}: exchange has no candles ${new Date(g.fromOpenTime).toISOString()} → ${new Date(g.toOpenTime).toISOString()} (${g.count}), accepted`);
+      recordSignalEvent({ symbol, klines15m: (klineCache.get(symbol) || {})['15m'] }, {
+        stage: 'data', outcome: 'accepted', reasonCode: 'EXCHANGE_GAP',
+        reason: `${interval}: Binance has no candles for ${g.count} interval(s) from ${new Date(g.fromOpenTime).toISOString()}`,
+        details: { interval, gap: g },
+      });
+    }
+    return judge(merged, newlyConfirmed);
   } catch (err) {
     console.log(`[scanner] backfill ${symbol} ${interval} failed: ${err.message}`);
-    return gaps;
+    return judge(cached);
   }
+}
+
+/** Test helper: forget confirmed exchange-side holes. */
+export function _exchangeGapsForTest() {
+  return exchangeGaps;
 }
 
 /** Backfill every cached symbol (called on each WebSocket (re)connect). */
@@ -231,7 +265,9 @@ export async function backfillAll(nowMs = now()) {
   let filled = 0;
   for (const symbol of klineCache.keys()) {
     for (const interval of ['1h', '15m']) {
-      const before = findGaps((klineCache.get(symbol) || {})[interval] || [], INTERVAL_MS[interval], nowMs).length;
+      const known = exchangeGaps.get(`${symbol}:${interval}`) || new Set();
+      const before = findGaps((klineCache.get(symbol) || {})[interval] || [], INTERVAL_MS[interval], nowMs)
+        .filter(g => !known.has(gapKey(g))).length;
       if (!before) continue;
       const after = await ensureContinuous(symbol, interval, nowMs);
       if (!after.length) filled++;

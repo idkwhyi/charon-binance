@@ -86,3 +86,43 @@ export function findGaps(klines, intervalMs, nowMs = null) {
   }
   return gaps;
 }
+
+/** Stable identity of a hole: the openTime span it is missing. */
+export const gapKey = g => `${g.fromOpenTime}-${g.toOpenTime}`;
+
+/**
+ * Holes the exchange itself confirms: the REST response covers both sides of
+ * the hole (a candle at/before it and one after it) but nothing inside —
+ * Binance has no candles there (e.g. maintenance). A tail hole has no candle
+ * after it yet and can never be confirmed this way.
+ * @param {Array} gaps - from findGaps, after merging `fetched`
+ * @param {Array} fetched - candles returned by the backfill request
+ */
+export function confirmExchangeGaps(gaps, fetched) {
+  if (!fetched.length) return [];
+  const first = fetched[0].openTime;
+  const last = fetched[fetched.length - 1].openTime;
+  return gaps.filter(g => first <= g.afterOpenTime && last > g.toOpenTime
+    && !fetched.some(k => k.openTime >= g.fromOpenTime && k.openTime <= g.toOpenTime));
+}
+
+/**
+ * Decide whether a series may be used. Same rule in live and backtest:
+ * - strict: the last `strictCandles` candles up to the latest closed one
+ *   must be continuous — no exceptions, exchange holes included
+ * - otherwise a hole confirmed as exchange-side is accepted
+ * - any other hole is a data gap on our side
+ * @param {Array} gaps - from findGaps(series, intervalMs, nowMs)
+ * @param {object} p - { intervalMs, nowMs, strictCandles, exchangeGapKeys: Set<string> }
+ * @returns {{ ok: boolean, strict: Array, data: Array, exchange: Array }}
+ */
+export function classifyGaps(gaps, { intervalMs, nowMs, strictCandles, exchangeGapKeys = new Set() }) {
+  const strictFrom = latestClosedOpenTime(intervalMs, nowMs) - (Math.max(1, strictCandles) - 1) * intervalMs;
+  const strict = [], data = [], exchange = [];
+  for (const g of gaps) {
+    if (g.toOpenTime >= strictFrom) strict.push(g);
+    else if (exchangeGapKeys.has(gapKey(g))) exchange.push(g);
+    else data.push(g);
+  }
+  return { ok: strict.length === 0 && data.length === 0, strict, data, exchange };
+}

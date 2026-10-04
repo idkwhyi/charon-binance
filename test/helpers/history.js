@@ -8,7 +8,8 @@ const k = (openTime, step, o = {}) => ({ openTime, open: 100, high: 100.05, low:
  * spike at spikeAt (bearish body if short); with stopOut, a 1m wick through a 1.5% SL
  * 5 minutes after the entry tick.
  */
-export function stubHistory(plan) {
+export function stubHistory(plan, { holes = {} } = {}) {
+  // holes: { '15m': [openTime, ...], '1h': [...] } — candles Binance does not have (any symbol)
   const original = axios.get;
   axios.get = async (url, { params = {} } = {}) => {
     if (url.includes('fundingRate')) return { data: [] };
@@ -16,6 +17,7 @@ export function stubHistory(plan) {
     const events = plan[params.symbol] || [];
     const rows = [];
     for (let o = Math.ceil(params.startTime / step) * step; o <= params.endTime && rows.length < params.limit; o += step) {
+      if ((holes[params.interval] || []).includes(o)) continue;
       let c = k(o, step);
       for (const e of events) {
         if (params.interval === '15m' && o === e.spikeAt) c = k(o, step, { open: e.short ? 100.1 : 99.9, volume: 1000 });
