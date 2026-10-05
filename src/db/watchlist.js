@@ -6,7 +6,8 @@
  *
  * Sources:
  *   - Manual: user adds/removes via Telegram commands
- *   - Auto:   top gainers fetched from Binance every N minutes
+ *   - Auto:   universe refresh at each 15m close (src/enrichment/topGainers.js,
+ *             rules in src/universe/rules.js)
  */
 
 import { query as pgQuery, fromJsonb } from './pg-connection.js';
@@ -142,31 +143,4 @@ export async function removeFromWatchlist(symbol) {
   }
 
   return { removed: true, symbol: sym };
-}
-
-/**
- * Merge auto-discovered symbols (top gainers) with current watchlist.
- * Pinned symbols are always preserved.
- * Auto symbols are capped to avoid scanning too many pairs.
- *
- * @param {string[]} autoSymbols - symbols from top gainer scan
- * @param {number} maxTotal - max total watchlist size
- * @returns {Promise<string[]>}
- */
-export async function mergeAutoSymbols(autoSymbols, maxTotal = 50) {
-  const pinned = await getPinnedSymbols();
-  const current = await getWatchlist();
-
-  // Always keep pinned + env defaults
-  const base = [...new Set([...pinned, ...WATCHLIST])];
-
-  // Fill remaining slots with auto symbols not already in base
-  const remaining = maxTotal - base.length;
-  const extras = autoSymbols
-    .filter(s => !base.includes(s))
-    .slice(0, Math.max(0, remaining));
-
-  const merged = [...new Set([...base, ...extras])];
-  await saveWatchlist(merged);
-  return merged;
 }

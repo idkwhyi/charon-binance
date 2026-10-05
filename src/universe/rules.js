@@ -11,6 +11,21 @@
  */
 
 /**
+ * The universe rules, shared by the live screener and the backtest:
+ * pinned + env WATCHLIST are always in; on top of them, the top `topN`
+ * symbols by |24h price change| (up or down) among those with 24h quote
+ * volume >= minVolume24hUsdt, |change| >= minAbsChangePercent, not a
+ * stablecoin, underlyingType COIN. A symbol leaves as soon as it drops out
+ * of the top `topN` (unless pinned/env).
+ */
+export const UNIVERSE_RULES = Object.freeze({
+  topN: 50,
+  minVolume24hUsdt: 50_000_000,
+  minAbsChangePercent: 2,
+  coinOnly: true,
+});
+
+/**
  * Stablecoin pairs: never included in dynamic universe.
  */
 export const STABLECOIN_PAIRS = new Set([
@@ -28,10 +43,10 @@ export const STABLECOIN_PAIRS = new Set([
  * @returns {object} criteria object
  */
 export function universeCriteria({
-  minVolume24hUsdt = 50_000_000,
-  minAbsChangePercent = 2,
+  minVolume24hUsdt = UNIVERSE_RULES.minVolume24hUsdt,
+  minAbsChangePercent = UNIVERSE_RULES.minAbsChangePercent,
   minOpenInterestUsdt = 0,
-  coinOnly = true,
+  coinOnly = UNIVERSE_RULES.coinOnly,
 } = {}) {
   return {
     minVolume24hUsdt,
@@ -106,25 +121,38 @@ export function selectTopMovers(tickers, criteria, exchangeInfoMap = null) {
 }
 
 /**
- * Merge universe symbols: always keep pinned + env defaults, fill remaining
- * slots with auto-discovered candidates.
- * @param {string[]} candidates - auto-discovered symbols (e.g., top gainers)
+ * Universe = pinned + env defaults (always kept) + the given movers. No
+ * overall cap: movers are already limited to the top N, so a mover ranked
+ * N-5 is never squeezed out by pinned/env symbols.
+ * @param {string[]} movers - top movers (e.g. selectTopMovers(...).slice(0, topN))
  * @param {string[]} pinned - user-pinned symbols (never removed)
- * @param {string[]} envDefaults - env WATCHLIST defaults (always in base)
- * @param {number} maxTotal - max total watchlist size (default: 50)
- * @returns {string[]} merged unique symbols
+ * @param {string[]} envDefaults - env WATCHLIST defaults (never removed)
+ * @returns {string[]} unique symbols: pinned, env, then movers in rank order
  */
-export function mergeUniverse(candidates, pinned = [], envDefaults = [], maxTotal = 50) {
-  // Base: always keep pinned + env defaults
-  const base = [...new Set([...pinned, ...envDefaults])];
+export function mergeUniverse(movers, pinned = [], envDefaults = []) {
+  return [...new Set([...pinned, ...envDefaults, ...movers])];
+}
 
-  // Fill remaining slots with candidates not already in base
-  const remaining = maxTotal - base.length;
-  const extras = candidates
-    .filter(s => !base.includes(s))
-    .slice(0, Math.max(0, remaining));
+/**
+ * Apply UNIVERSE_RULES to one 24h-ticker snapshot. The single entry point
+ * for both the live screener and the backtest's point-in-time universe.
+ * @param {object[]} tickers - { symbol, quoteVolume, priceChangePercent }
+ * @param {object} ctx
+ * @param {Map<string, object>|null} ctx.exchangeInfo - see exchangeInfoMap()
+ * @param {string[]} [ctx.pinned]
+ * @param {string[]} [ctx.envDefaults]
+ * @param {object} [ctx.rules] - defaults to UNIVERSE_RULES
+ * @returns {{ movers: string[], symbols: string[] }}
+ */
+export function selectUniverse(tickers, { exchangeInfo = null, pinned = [], envDefaults = [], rules = UNIVERSE_RULES } = {}) {
+  const movers = selectTopMovers(tickers, universeCriteria(rules), exchangeInfo).slice(0, rules.topN);
+  return { movers, symbols: mergeUniverse(movers, pinned, envDefaults) };
+}
 
-  return [...new Set([...base, ...extras])];
+/** Symbols that entered / left between two universe snapshots. */
+export function diffUniverse(before = [], after = []) {
+  const b = new Set(before), a = new Set(after);
+  return { added: after.filter(s => !b.has(s)), removed: before.filter(s => !a.has(s)) };
 }
 
 /**

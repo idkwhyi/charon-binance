@@ -75,11 +75,10 @@ export const SIGNAL_SCAN_MS = Number(process.env.SIGNAL_SCAN_MS || 30_000);
 export const WATCHLIST = (process.env.WATCHLIST || 'BTCUSDT,ETHUSDT,BNBUSDT,SOLUSDT,XRPUSDT,DOGEUSDT,ADAUSDT,AVAXUSDT,DOTUSDT,LINKUSDT')
   .split(',').map(s => s.trim().toUpperCase()).filter(Boolean);
 
-// Top Gainer Auto-Screening
+// Top Gainer Auto-Screening (dynamic universe). On/off only: the selection
+// rules (top N, min volume, min |change|, COIN only) are UNIVERSE_RULES in
+// src/universe/rules.js, shared with the backtest.
 export const TOP_GAINER_ENABLED = process.env.TOP_GAINER_ENABLED !== 'false';
-export const TOP_GAINER_COUNT = Number(process.env.TOP_GAINER_COUNT || 50);
-export const TOP_GAINER_MIN_VOLUME_USDT = Number(process.env.TOP_GAINER_MIN_VOLUME_USDT || 50_000_000);
-export const TOP_GAINER_REFRESH_MS = Number(process.env.TOP_GAINER_REFRESH_MS || 300_000);
 
 export const JSON_HEADERS = {
   Accept: 'application/json',

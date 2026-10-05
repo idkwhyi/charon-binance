@@ -1,19 +1,20 @@
 /**
  * Top Gainer Auto-Screener
  *
- * Fetches all USDM futures tickers from Binance and evaluates them against
- * the universe selection rules (see src/universe/rules.js). Merges top movers
- * into the active watchlist (pinned + env defaults always preserved).
+ * Fetches all USDM futures tickers + exchangeInfo from Binance and applies
+ * the universe rules (selectUniverse in src/universe/rules.js): pinned + env
+ * defaults always kept, plus the current top movers; symbols that drop out
+ * of the top N leave the watchlist.
  *
  * Universe now updates at 15m close (same as signal cycles) via updateUniverse(),
  * instead of a separate 5-minute timer.
  */
 
 import { fetchTicker24h, fetchExchangeInfoAll } from './binance.js';
-import { mergeAutoSymbols, getWatchlist, getPinnedSymbols, invalidateWatchlistCache } from '../db/watchlist.js';
-import { TOP_GAINER_ENABLED, TOP_GAINER_COUNT, TOP_GAINER_MIN_VOLUME_USDT, WATCHLIST } from '../config.js';
+import { saveWatchlist, getWatchlist, getPinnedSymbols, invalidateWatchlistCache } from '../db/watchlist.js';
+import { TOP_GAINER_ENABLED, WATCHLIST } from '../config.js';
 import { sendTelegram } from '../telegram/send.js';
-import { universeCriteria, selectTopMovers, exchangeInfoMap } from '../universe/rules.js';
+import { selectUniverse, diffUniverse, exchangeInfoMap } from '../universe/rules.js';
 
 let last15mCloseTimeMs = 0;
 
@@ -55,31 +56,23 @@ export async function updateUniverse(force = false) {
 
   try {
     const [tickers, infoSymbols] = await Promise.all([fetchTicker24h(), fetchExchangeInfoAll()]);
-    if (!Array.isArray(tickers) || tickers.length === 0) {
+    // Without either snapshot the rules can't be applied: keep the current universe
+    if (!Array.isArray(tickers) || tickers.length === 0 || !Array.isArray(infoSymbols) || infoSymbols.length === 0) {
       return { updated: false, symbols: [], added: [], removed: [] };
     }
 
-    const criteria = universeCriteria({
-      minVolume24hUsdt: TOP_GAINER_MIN_VOLUME_USDT,
-      minAbsChangePercent: 2,
-      minOpenInterestUsdt: 0, // OI filter not used in live universe selection yet
-      coinOnly: true,
-    });
-
-    const movers = selectTopMovers(tickers, criteria, exchangeInfoMap(infoSymbols))
-      .slice(0, TOP_GAINER_COUNT);
-
-    if (movers.length === 0) {
-      return { updated: false, symbols: [], added: [], removed: [] };
-    }
-
+    // All selection rules live in src/universe/rules.js (shared with the backtest).
+    // Zero movers is a valid result: dynamic symbols leave, pinned + env stay.
     const before = await getWatchlist();
-    const pinned = await getPinnedSymbols();
-    const after = await mergeAutoSymbols(movers, 50);
+    const { symbols } = selectUniverse(tickers, {
+      exchangeInfo: exchangeInfoMap(infoSymbols),
+      pinned: await getPinnedSymbols(),
+      envDefaults: WATCHLIST,
+    });
+    const after = await saveWatchlist(symbols);
     invalidateWatchlistCache();
 
-    const added = after.filter(s => !before.includes(s));
-    const removed = before.filter(s => !after.includes(s));
+    const { added, removed } = diffUniverse(before, after);
 
     if (added.length > 0 || removed.length > 0) {
       console.log(`[universe] updated at ${new Date(current15mMs).toISOString()}: ${after.length} symbols (+${added.length} -${removed.length})`);

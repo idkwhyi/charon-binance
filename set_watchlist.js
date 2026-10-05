@@ -85,8 +85,8 @@ async function main() {
     console.log('\nNotes:');
     console.log('  - Restart the bot (or /watch, /unwatch) so the WebSocket subscribes to the new list; reads are cached ~60s.');
     if (config.TOP_GAINER_ENABLED) {
-      console.log('  ! TOP_GAINER_ENABLED is true: the top-gainer refresh (at startup and every');
-      console.log('    TOP_GAINER_REFRESH_MS) rebuilds this list as pinned + env WATCHLIST + gainers.');
+      console.log('  ! TOP_GAINER_ENABLED is true: the universe refresh (at startup and every 15m');
+      console.log('    close) rebuilds this list as pinned + env WATCHLIST + top 50 movers.');
       console.log('    Set TOP_GAINER_ENABLED=false in .env to keep exactly this list.');
     }
   } catch (err) {

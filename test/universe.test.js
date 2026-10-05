@@ -8,6 +8,9 @@ import {
   mergeUniverse,
   ticker24hFromKlines15m,
   exchangeInfoMap,
+  selectUniverse,
+  diffUniverse,
+  UNIVERSE_RULES,
 } from '../src/universe/rules.js';
 
 const COIN = { underlyingType: 'COIN' };
@@ -191,64 +194,60 @@ test('selectTopMovers: can be sliced to limit results', () => {
   assert.strictEqual(result[1], 'C1USDT');
 });
 
-test('mergeUniverse: always include pinned', () => {
-  const candidates = ['NEW1USDT', 'NEW2USDT'];
-  const pinned = ['BTCUSDT', 'ETHUSDT'];
-  const envDefaults = [];
-  const result = mergeUniverse(candidates, pinned, envDefaults);
-  assert(result.includes('BTCUSDT'));
-  assert(result.includes('ETHUSDT'));
+test('mergeUniverse: pinned + env always kept, movers added, no duplicates', () => {
+  const result = mergeUniverse(['NEW1USDT', 'BTCUSDT', 'NEW2USDT'], ['PIN1USDT', 'BTCUSDT'], ['BTCUSDT', 'ETHUSDT']);
+  assert.deepStrictEqual(result, ['PIN1USDT', 'BTCUSDT', 'ETHUSDT', 'NEW1USDT', 'NEW2USDT']);
 });
 
-test('mergeUniverse: always include env defaults', () => {
-  const candidates = ['NEW1USDT'];
-  const pinned = [];
-  const envDefaults = ['BTCUSDT', 'BNBUSDT'];
-  const result = mergeUniverse(candidates, pinned, envDefaults);
-  assert(result.includes('BTCUSDT'));
-  assert(result.includes('BNBUSDT'));
+test('mergeUniverse: no overall cap — pinned/env never squeeze out a top mover', () => {
+  const movers = Array.from({ length: 50 }, (_, i) => `M${i}USDT`);
+  const env = Array.from({ length: 10 }, (_, i) => `E${i}USDT`);
+  const result = mergeUniverse(movers, [], env);
+  assert.strictEqual(result.length, 60);
+  assert.ok(result.includes('M49USDT'));
 });
 
-test('mergeUniverse: fill slots with candidates', () => {
-  const candidates = ['NEW1USDT', 'NEW2USDT', 'NEW3USDT'];
-  const pinned = ['PIN1USDT'];
-  const envDefaults = ['ENV1USDT'];
-  const maxTotal = 5;
-  const result = mergeUniverse(candidates, pinned, envDefaults, maxTotal);
-  assert(result.includes('PIN1USDT'));
-  assert(result.includes('ENV1USDT'));
-  assert(result.includes('NEW1USDT'));
-  assert(result.includes('NEW2USDT'));
-  assert(result.includes('NEW3USDT'));
-  assert.strictEqual(result.length, 5);
+const tk = (symbol, pct, vol = 100_000_000) => ({ symbol, quoteVolume: vol, priceChangePercent: pct });
+
+test('UNIVERSE_RULES: top 50, 24h volume >= 50M, |change| >= 2%, COIN only', () => {
+  assert.deepStrictEqual({ ...UNIVERSE_RULES }, { topN: 50, minVolume24hUsdt: 50_000_000, minAbsChangePercent: 2, coinOnly: true });
+  const c = universeCriteria();
+  assert.strictEqual(c.minVolume24hUsdt, UNIVERSE_RULES.minVolume24hUsdt);
+  assert.strictEqual(c.minAbsChangePercent, UNIVERSE_RULES.minAbsChangePercent);
 });
 
-test('mergeUniverse: not exceed maxTotal', () => {
-  const candidates = Array.from({ length: 100 }, (_, i) => `NEW${i}USDT`);
-  const pinned = ['PIN1USDT'];
-  const envDefaults = ['ENV1USDT', 'ENV2USDT'];
-  const maxTotal = 50;
-  const result = mergeUniverse(candidates, pinned, envDefaults, maxTotal);
-  assert(result.length <= maxTotal);
+test('selectUniverse: ranks by |24h change| both ways, keeps top N, applies every filter', () => {
+  const tickers = [
+    ...Array.from({ length: 55 }, (_, i) => tk(`C${String(i).padStart(2, '0')}USDT`, (i % 2 ? -1 : 1) * (3 + i))),
+    tk('LOWVOLUSDT', 90, 49_999_999),
+    tk('FLATUSDT', 1.99),
+    tk('USDCUSDT', 99),
+    tk('TSLAUSDT', 80),
+  ];
+  const info = exchangeInfoMap([
+    ...tickers.map(t => ({ symbol: t.symbol, underlyingType: 'COIN' })).filter(x => x.symbol !== 'TSLAUSDT'),
+    { symbol: 'TSLAUSDT', underlyingType: 'EQUITY' },
+  ]);
+  const { movers, symbols } = selectUniverse(tickers, { exchangeInfo: info, pinned: ['PINUSDT'], envDefaults: ['C00USDT', 'ENVUSDT'] });
+  assert.strictEqual(movers.length, 50);
+  assert.strictEqual(movers[0], 'C54USDT');
+  assert.strictEqual(movers[1], 'C53USDT', 'negative change ranks by absolute value');
+  assert.ok(!movers.includes('C04USDT') && !movers.includes('C00USDT'), 'ranks 51+ are out');
+  for (const s of ['LOWVOLUSDT', 'FLATUSDT', 'USDCUSDT', 'TSLAUSDT']) assert.ok(!movers.includes(s), s);
+  assert.deepStrictEqual(symbols.slice(0, 3), ['PINUSDT', 'C00USDT', 'ENVUSDT'], 'pinned + env kept even outside top N');
+  assert.strictEqual(symbols.length, 53);
 });
 
-test('mergeUniverse: no duplicates', () => {
-  const candidates = ['DUP1USDT', 'DUP2USDT'];
-  const pinned = ['DUP1USDT'];
-  const envDefaults = ['DUP2USDT'];
-  const result = mergeUniverse(candidates, pinned, envDefaults);
-  const unique = new Set(result);
-  assert.strictEqual(result.length, unique.size);
-});
-
-test('mergeUniverse: prefer pinned over candidates when space limited', () => {
-  const candidates = ['NEW1USDT', 'NEW2USDT', 'NEW3USDT'];
-  const pinned = ['PIN1USDT'];
-  const envDefaults = [];
-  const maxTotal = 2;
-  const result = mergeUniverse(candidates, pinned, envDefaults, maxTotal);
-  assert(result.includes('PIN1USDT'));
-  assert.strictEqual(result.length, 2);
+test('selectUniverse: a symbol leaves when it drops out of the top N; pinned/env never leave', () => {
+  const info = exchangeInfoMap(['AUSDT', 'BUSDT', 'CUSDT', 'ENVUSDT'].map(symbol => ({ symbol, underlyingType: 'COIN' })));
+  const rules = { ...UNIVERSE_RULES, topN: 2 };
+  const ctx = { exchangeInfo: info, envDefaults: ['ENVUSDT'], rules };
+  const t0 = selectUniverse([tk('AUSDT', 9), tk('BUSDT', 8), tk('CUSDT', 3), tk('ENVUSDT', 0)], ctx).symbols;
+  const t1 = selectUniverse([tk('AUSDT', 9), tk('BUSDT', 2.5), tk('CUSDT', -7), tk('ENVUSDT', 0)], ctx).symbols;
+  assert.deepStrictEqual(t0, ['ENVUSDT', 'AUSDT', 'BUSDT']);
+  assert.deepStrictEqual(t1, ['ENVUSDT', 'AUSDT', 'CUSDT']);
+  assert.deepStrictEqual(diffUniverse(t0, t1), { added: ['CUSDT'], removed: ['BUSDT'] });
+  assert.deepStrictEqual(selectUniverse([tk('AUSDT', 1)], ctx).symbols, ['ENVUSDT'], 'no movers: only pinned + env');
 });
 
 test('ticker24hFromKlines15m: calculate quoteVolume (96 candles = 24h)', () => {
