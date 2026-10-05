@@ -21,7 +21,7 @@ test('telegram /topgainers links against the universe refresh (no second selecti
   assert.match(src, /async function handleTopGainers[\s\S]*?await updateUniverse\(true\)/);
 });
 
-test('updateUniverse(true): saves merged watchlist and reports added/removed without throwing', { skip: !TOP_GAINER_ENABLED }, async () => {
+test('updateUniverse(true): COIN-only movers, saves merged watchlist, reports added/removed', { skip: !TOP_GAINER_ENABLED }, async () => {
   const { updateUniverse } = await import('../src/enrichment/topGainers.js');
   let saved = null;
   installFakePool((text, params) => {
@@ -31,13 +31,20 @@ test('updateUniverse(true): saves merged watchlist and reports added/removed wit
   });
   invalidateWatchlistCache();
   const original = axios.get;
-  axios.get = async () => ({ data: [{ symbol: 'NEWUSDT', quoteVolume: '90000000', priceChangePercent: '-12' }] });
+  axios.get = async (url) => url.includes('exchangeInfo')
+    ? { data: { symbols: [{ symbol: 'NEWUSDT', underlyingType: 'COIN' }, { symbol: 'TSLAUSDT', underlyingType: 'EQUITY' }, { symbol: 'XAUUSDT', underlyingType: 'COMMODITY' }] } }
+    : { data: [
+      { symbol: 'NEWUSDT', quoteVolume: '90000000', priceChangePercent: '-12' },
+      { symbol: 'TSLAUSDT', quoteVolume: '900000000', priceChangePercent: '30' },
+      { symbol: 'XAUUSDT', quoteVolume: '900000000', priceChangePercent: '25' },
+      { symbol: 'UNLISTEDUSDT', quoteVolume: '900000000', priceChangePercent: '20' },
+    ] };
   const log = console.log; console.log = () => {};
   try {
     const res = await updateUniverse(true);
     assert.equal(res.updated, true);
     assert.ok(res.symbols.includes('NEWUSDT'));
-    assert.deepEqual(res.added, ['NEWUSDT']);
+    assert.deepEqual(res.added, ['NEWUSDT'], 'EQUITY, COMMODITY and symbols without exchange info are not COIN');
     assert.deepEqual(res.removed, ['OLDUSDT']);
     assert.deepEqual(saved, res.symbols);
   } finally {

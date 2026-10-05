@@ -167,14 +167,22 @@ export async function fetchOpenInterest(symbol) {
 }
 
 /**
- * Public: fetch exchange info for a symbol (precision, tick size).
+ * Public: exchange info `symbols` array for every USDⓈ-M contract
+ * (underlyingType, contractType, status, precision, filters).
  */
-export async function fetchExchangeInfo(symbol) {
+export async function fetchExchangeInfoAll() {
   const res = await axios.get(`${BASE}/fapi/v1/exchangeInfo`, {
     timeout: 10_000,
     headers: JSON_HEADERS,
   });
-  return res.data.symbols.find(s => s.symbol === symbol) || null;
+  return res.data.symbols;
+}
+
+/**
+ * Public: fetch exchange info for a symbol (precision, tick size).
+ */
+export async function fetchExchangeInfo(symbol) {
+  return (await fetchExchangeInfoAll()).find(s => s.symbol === symbol) || null;
 }
 
 /**

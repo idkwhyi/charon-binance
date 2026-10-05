@@ -7,14 +7,18 @@ import {
   selectTopMovers,
   mergeUniverse,
   ticker24hFromKlines15m,
+  exchangeInfoMap,
 } from '../src/universe/rules.js';
+
+const COIN = { underlyingType: 'COIN' };
+const coinMap = (tickers) => exchangeInfoMap(tickers.map(t => ({ symbol: t.symbol, underlyingType: 'COIN' })));
 
 test('universeCriteria: default criteria', () => {
   const c = universeCriteria();
   assert.strictEqual(c.minVolume24hUsdt, 50_000_000);
   assert.strictEqual(c.minAbsChangePercent, 2);
   assert.strictEqual(c.minOpenInterestUsdt, 0);
-  assert.strictEqual(c.excludeNonCrypto, true);
+  assert.strictEqual(c.coinOnly, true);
 });
 
 test('universeCriteria: custom values', () => {
@@ -22,12 +26,12 @@ test('universeCriteria: custom values', () => {
     minVolume24hUsdt: 10_000_000,
     minAbsChangePercent: 1,
     minOpenInterestUsdt: 5_000_000,
-    excludeNonCrypto: false,
+    coinOnly: false,
   });
   assert.strictEqual(c.minVolume24hUsdt, 10_000_000);
   assert.strictEqual(c.minAbsChangePercent, 1);
   assert.strictEqual(c.minOpenInterestUsdt, 5_000_000);
-  assert.strictEqual(c.excludeNonCrypto, false);
+  assert.strictEqual(c.coinOnly, false);
 });
 
 test('passesCriteria: good crypto ticker', () => {
@@ -89,10 +93,10 @@ test('passesCriteria: accept absolute price change', () => {
     quoteVolume: 100_000_000,
     priceChangePercent: -5,
   };
-  assert.strictEqual(passesCriteria(ticker, defaultCriteria), true);
+  assert.strictEqual(passesCriteria(ticker, defaultCriteria, COIN), true);
 });
 
-test('passesCriteria: reject non-crypto when excludeNonCrypto=true', () => {
+test('passesCriteria: reject non-crypto when coinOnly=true', () => {
   const defaultCriteria = universeCriteria();
   const ticker = {
     symbol: 'TSLAUSDT',
@@ -103,8 +107,8 @@ test('passesCriteria: reject non-crypto when excludeNonCrypto=true', () => {
   assert.strictEqual(passesCriteria(ticker, defaultCriteria, info), false);
 });
 
-test('passesCriteria: accept non-crypto when excludeNonCrypto=false', () => {
-  const criteria = universeCriteria({ excludeNonCrypto: false });
+test('passesCriteria: accept non-crypto when coinOnly=false', () => {
+  const criteria = universeCriteria({ coinOnly: false });
   const ticker = {
     symbol: 'TSLAUSDT',
     quoteVolume: 100_000_000,
@@ -144,7 +148,7 @@ test('selectTopMovers: sort by absolute price change', () => {
     { symbol: 'CCUSDT', quoteVolume: 100_000_000, priceChangePercent: 5 },
   ];
   const criteria = universeCriteria();
-  const result = selectTopMovers(tickers, criteria);
+  const result = selectTopMovers(tickers, criteria, coinMap(tickers));
   assert.deepStrictEqual(result, ['BBUSDT', 'CCUSDT', 'AAUSDT']);
 });
 
@@ -155,7 +159,7 @@ test('selectTopMovers: filter non-matching', () => {
     { symbol: 'ETHUSDT', quoteVolume: 100_000_000, priceChangePercent: 3 },
   ];
   const criteria = universeCriteria();
-  const result = selectTopMovers(tickers, criteria);
+  const result = selectTopMovers(tickers, criteria, coinMap(tickers));
   assert.deepStrictEqual(result, ['BTCUSDT', 'ETHUSDT']);
 });
 
@@ -181,7 +185,7 @@ test('selectTopMovers: can be sliced to limit results', () => {
     { symbol: 'D1USDT', quoteVolume: 100_000_000, priceChangePercent: 4 },
   ];
   const criteria = universeCriteria();
-  const result = selectTopMovers(tickers, criteria).slice(0, 2);
+  const result = selectTopMovers(tickers, criteria, coinMap(tickers)).slice(0, 2);
   assert.strictEqual(result.length, 2);
   assert.strictEqual(result[0], 'D1USDT');
   assert.strictEqual(result[1], 'C1USDT');
@@ -330,7 +334,7 @@ test('STABLECOIN_PAIRS: has all stablecoins', () => {
 });
 
 test('non-crypto filter: exclude TSLAUSDT (EQUITY/TradFi)', () => {
-  const criteria = universeCriteria({ excludeNonCrypto: true });
+  const criteria = universeCriteria({ coinOnly: true });
   const ticker = {
     symbol: 'TSLAUSDT',
     quoteVolume: 100_000_000,
@@ -341,7 +345,7 @@ test('non-crypto filter: exclude TSLAUSDT (EQUITY/TradFi)', () => {
 });
 
 test('non-crypto filter: exclude MSTRUSDT (EQUITY/TradFi)', () => {
-  const criteria = universeCriteria({ excludeNonCrypto: true });
+  const criteria = universeCriteria({ coinOnly: true });
   const ticker = {
     symbol: 'MSTRUSDT',
     quoteVolume: 100_000_000,
@@ -352,7 +356,7 @@ test('non-crypto filter: exclude MSTRUSDT (EQUITY/TradFi)', () => {
 });
 
 test('non-crypto filter: exclude SOXSUSDT (EQUITY/TradFi)', () => {
-  const criteria = universeCriteria({ excludeNonCrypto: true });
+  const criteria = universeCriteria({ coinOnly: true });
   const ticker = {
     symbol: 'SOXSUSDT',
     quoteVolume: 100_000_000,
@@ -362,8 +366,8 @@ test('non-crypto filter: exclude SOXSUSDT (EQUITY/TradFi)', () => {
   assert.strictEqual(passesCriteria(ticker, criteria, info), false);
 });
 
-test('non-crypto filter: include crypto despite non-COIN underlyingType if excludeNonCrypto=false', () => {
-  const criteria = universeCriteria({ excludeNonCrypto: false });
+test('non-crypto filter: include crypto despite non-COIN underlyingType if coinOnly=false', () => {
+  const criteria = universeCriteria({ coinOnly: false });
   const ticker = {
     symbol: 'MSTRUSDT',
     quoteVolume: 100_000_000,
@@ -371,4 +375,21 @@ test('non-crypto filter: include crypto despite non-COIN underlyingType if exclu
   };
   const info = { underlyingType: 'EQUITY', underlyingSubType: 'TradFi' };
   assert.strictEqual(passesCriteria(ticker, criteria, info), true);
+});
+
+test('coin allowlist: commodity, index and unknown underlying types are rejected', () => {
+  const criteria = universeCriteria();
+  const t = sym => ({ symbol: sym, quoteVolume: 100_000_000, priceChangePercent: 5 });
+  assert.strictEqual(passesCriteria(t('XAUUSDT'), criteria, { underlyingType: 'COMMODITY' }), false);
+  assert.strictEqual(passesCriteria(t('IDXUSDT'), criteria, { underlyingType: 'INDEX' }), false);
+  assert.strictEqual(passesCriteria(t('NEWUSDT'), criteria, { underlyingType: 'SOMETHING_NEW' }), false);
+  assert.strictEqual(passesCriteria(t('NOINFOUSDT'), criteria, {}), false);
+  assert.strictEqual(passesCriteria(t('NOINFOUSDT'), criteria, null), false, 'missing exchange info is not COIN');
+  assert.strictEqual(passesCriteria(t('BTCUSDT'), criteria, COIN), true);
+});
+
+test('coin allowlist: selectTopMovers without an exchange info map selects nothing', () => {
+  const tickers = [{ symbol: 'BTCUSDT', quoteVolume: 100_000_000, priceChangePercent: 5 }];
+  assert.deepStrictEqual(selectTopMovers(tickers, universeCriteria()), []);
+  assert.deepStrictEqual(selectTopMovers(tickers, universeCriteria(), coinMap(tickers)), ['BTCUSDT']);
 });

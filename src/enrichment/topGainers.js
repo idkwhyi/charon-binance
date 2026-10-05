@@ -9,11 +9,11 @@
  * instead of a separate 5-minute timer.
  */
 
-import { fetchTicker24h } from './binance.js';
+import { fetchTicker24h, fetchExchangeInfoAll } from './binance.js';
 import { mergeAutoSymbols, getWatchlist, getPinnedSymbols, invalidateWatchlistCache } from '../db/watchlist.js';
 import { TOP_GAINER_ENABLED, TOP_GAINER_COUNT, TOP_GAINER_MIN_VOLUME_USDT, WATCHLIST } from '../config.js';
 import { sendTelegram } from '../telegram/send.js';
-import { universeCriteria, selectTopMovers } from '../universe/rules.js';
+import { universeCriteria, selectTopMovers, exchangeInfoMap } from '../universe/rules.js';
 
 let last15mCloseTimeMs = 0;
 
@@ -54,7 +54,7 @@ export async function updateUniverse(force = false) {
   last15mCloseTimeMs = current15mMs;
 
   try {
-    const tickers = await fetchTicker24h();
+    const [tickers, infoSymbols] = await Promise.all([fetchTicker24h(), fetchExchangeInfoAll()]);
     if (!Array.isArray(tickers) || tickers.length === 0) {
       return { updated: false, symbols: [], added: [], removed: [] };
     }
@@ -63,10 +63,10 @@ export async function updateUniverse(force = false) {
       minVolume24hUsdt: TOP_GAINER_MIN_VOLUME_USDT,
       minAbsChangePercent: 2,
       minOpenInterestUsdt: 0, // OI filter not used in live universe selection yet
-      excludeNonCrypto: true,
+      coinOnly: true,
     });
 
-    const movers = selectTopMovers(tickers, criteria)
+    const movers = selectTopMovers(tickers, criteria, exchangeInfoMap(infoSymbols))
       .slice(0, TOP_GAINER_COUNT);
 
     if (movers.length === 0) {

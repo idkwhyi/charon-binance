@@ -4,7 +4,7 @@
  * Centralized logic for:
  * - Selecting top gainer candidates from tickers
  * - Merging with pinned/env symbols
- * - Filtering non-crypto assets
+ * - Allowlisting crypto (underlyingType COIN only)
  * - Applying OI filter (live & backtest)
  *
  * Used by both live bot (enrichment/topGainers) and backtest (runner).
@@ -23,21 +23,35 @@ export const STABLECOIN_PAIRS = new Set([
  *   - minVolume24hUsdt: min 24h quote volume (default: 50M)
  *   - minAbsChangePercent: min |24h price change %| (default: 2)
  *   - minOpenInterestUsdt: min OI (default: 0, disabled)
- *   - excludeNonCrypto: exclude underlyingType='EQUITY' (default: true)
+ *   - coinOnly: allowlist — only underlyingType 'COIN' passes; EQUITY,
+ *     commodity, index or unknown/missing exchange info are rejected (default: true)
  * @returns {object} criteria object
  */
 export function universeCriteria({
   minVolume24hUsdt = 50_000_000,
   minAbsChangePercent = 2,
   minOpenInterestUsdt = 0,
-  excludeNonCrypto = true,
+  coinOnly = true,
 } = {}) {
   return {
     minVolume24hUsdt,
     minAbsChangePercent,
     minOpenInterestUsdt,
-    excludeNonCrypto,
+    coinOnly,
   };
+}
+
+/** Allowlist: true only for exchange info with underlyingType 'COIN'. */
+export function isCoinUnderlying(exchangeInfo) {
+  return exchangeInfo?.underlyingType === 'COIN';
+}
+
+/**
+ * symbol => exchange info, from the exchangeInfo `symbols` array
+ * (GET /fapi/v1/exchangeInfo). Pass the result to selectTopMovers.
+ */
+export function exchangeInfoMap(symbols = []) {
+  return new Map(symbols.map(s => [String(s.symbol), s]));
 }
 
 /**
@@ -48,8 +62,9 @@ export function universeCriteria({
  *   - priceChangePercent: number
  *   - openInterest: number (optional, for OI filter)
  * @param {object} criteria - from universeCriteria()
- * @param {object} exchangeInfo - optional, from fetchExchangeInfo(symbol)
- *   - underlyingType: 'COIN' | 'EQUITY' | null
+ * @param {object|null} exchangeInfo - the symbol's exchangeInfo entry
+ *   - underlyingType: 'COIN' | 'EQUITY' | ... — with coinOnly, anything but
+ *     'COIN' (including a missing entry) is rejected
  * @returns {boolean}
  */
 export function passesCriteria(ticker, criteria, exchangeInfo = null) {
@@ -64,7 +79,7 @@ export function passesCriteria(ticker, criteria, exchangeInfo = null) {
     vol >= criteria.minVolume24hUsdt &&
     pct >= criteria.minAbsChangePercent &&
     (criteria.minOpenInterestUsdt <= 0 || oi >= criteria.minOpenInterestUsdt) &&
-    (!criteria.excludeNonCrypto || !exchangeInfo || exchangeInfo.underlyingType === 'COIN')
+    (!criteria.coinOnly || isCoinUnderlying(exchangeInfo))
   );
 }
 
@@ -72,7 +87,8 @@ export function passesCriteria(ticker, criteria, exchangeInfo = null) {
  * Select top gainer candidates from tickers.
  * @param {object[]} tickers - Binance 24h tickers
  * @param {object} criteria - from universeCriteria()
- * @param {Map<string, object>} exchangeInfoMap - optional, symbol => exchangeInfo
+ * @param {Map<string, object>|null} exchangeInfoMap - symbol => exchangeInfo (see
+ *   exchangeInfoMap()); required when criteria.coinOnly, else nothing passes
  * @returns {string[]} sorted symbol list (top movers by |priceChangePercent|)
  */
 export function selectTopMovers(tickers, criteria, exchangeInfoMap = null) {
