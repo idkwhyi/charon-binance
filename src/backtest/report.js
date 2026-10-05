@@ -1,4 +1,5 @@
 import { getBacktestRun, getBacktestBalance, getBacktestPositions } from '../db/backtest.js';
+import { fromJsonb } from '../db/pg-connection.js';
 
 function groupBy(items, keyFn) {
   const map = new Map();
@@ -97,6 +98,39 @@ export function summarizeOutcomes(rows = []) {
 }
 
 /**
+ * Universe membership and OI coverage of a run (from backtest_runs.params_json),
+ * plus results split between the core watchlist and dynamically added symbols.
+ */
+export function summarizeUniverse(params, closed, ctx) {
+  const u = params?.universe;
+  const core = new Set(u?.core || []);
+  const members = [...(u?.members || [])]
+    .map(m => ({ symbol: m.symbol, totalMs: m.totalMs, intervals: m.intervals?.length || 0, core: core.has(m.symbol), delisted: (u?.delisted || []).includes(m.symbol) }))
+    .sort((a, b) => b.totalMs - a.totalMs || a.symbol.localeCompare(b.symbol));
+  const oi = params?.openInterest || null;
+  return {
+    mode: u?.mode || 'fixed',
+    core: [...core],
+    members,
+    dynamicCount: members.filter(m => !m.core).length,
+    delisted: members.filter(m => m.delisted).map(m => m.symbol),
+    events: (u?.events || []).length,
+    avgSize: u?.stats?.avgSize ?? null,
+    maxSize: u?.stats?.maxSize ?? null,
+    excludedUnknownType: u?.excludedUnknownType || [],
+    oi: oi && {
+      ...oi,
+      coveragePercent: oi.lookups > 0 ? oi.found / oi.lookups * 100 : null,
+    },
+    // Fixed runs have no params (older runs) or core = all symbols: everything is core
+    results: {
+      core: summarizeTrades(closed.filter(p => !u || core.has(p.symbol)), ctx),
+      dynamic: summarizeTrades(closed.filter(p => u && !core.has(p.symbol)), ctx),
+    },
+  };
+}
+
+/**
  * Aggregate a completed (or in-progress) backtest run into report-ready stats.
  * All numeric DB fields are wrapped in Number() because pg returns
  * DECIMAL/BIGINT columns as strings to avoid precision loss.
@@ -131,6 +165,7 @@ export async function buildBacktestReport(runId) {
     bySymbol,
     byDirection,
     signals: summarizeOutcomes(run.signal_outcomes_json || []),
+    universe: summarizeUniverse(fromJsonb(run.params_json) || {}, closed, ctx),
     equityCurve: balance.equity_curve_json || [],
   };
 }
@@ -161,6 +196,49 @@ function compactLine(label, s) {
   return `${label.padEnd(12)} trades=${String(s.trades).padEnd(4)} ${s.tradesPerDay.toFixed(2)}/d  win=${s.winRate.toFixed(1).padStart(5)}%  E=${r2(s.expectancyR).padStart(7)}  PF=${pf(s.profitFactor).padStart(5)}  DD=${s.maxDrawdownPercent.toFixed(2)}%  ${exitLine(s.exits)}`;
 }
 
+const dur = ms => {
+  const h = ms / 3_600_000;
+  return h >= 48 ? `${(h / 24).toFixed(1)}d` : `${h.toFixed(1)}h`;
+};
+
+function universeLines(u, line) {
+  const out = [
+    '🌐 UNIVERSE', line,
+    `Mode:              ${u.mode}${u.mode === 'dynamic' ? ' (point-in-time, src/universe/rules.js at every 15m close)' : ''}`,
+    `Core watchlist:    ${u.core.length ? u.core.join(', ') : '(none)'}`,
+  ];
+  if (u.mode === 'dynamic') {
+    out.push(
+      `Ever in universe:  ${u.members.length} symbol(s), ${u.dynamicCount} dynamic; ${u.events} enter/exit events`,
+      `Size:              avg ${u.avgSize?.toFixed(1) ?? 'n/a'}, max ${u.maxSize ?? 'n/a'}`,
+      `Delisted entered:  ${u.delisted.length}${u.delisted.length ? ` (${u.delisted.join(', ')})` : ''}`,
+    );
+    if (u.excludedUnknownType.length) {
+      out.push(`Unknown type out:  ${u.excludedUnknownType.length} symbol(s) would have qualified but have no underlyingType (--unknown-underlying coin to include): ${u.excludedUnknownType.join(', ')}`);
+    }
+    out.push('', '  Symbol               Total time   Stints');
+    for (const m of u.members) {
+      out.push(`  ${(m.symbol + (m.core ? ' (core)' : '') + (m.delisted ? ' †' : '')).padEnd(20)} ${dur(m.totalMs).padStart(10)}   ${String(m.intervals).padStart(6)}`);
+    }
+    if (u.delisted.length) out.push('  † delisted since');
+  }
+  return out;
+}
+
+function oiLines(oi, line) {
+  if (!oi) return [];
+  const out = ['', '📊 OPEN INTEREST DATA (min_open_interest_usdt)', line];
+  if (!(oi.minOpenInterestUsdt > 0)) return [...out, 'Filter off (strategy min_open_interest_usdt = 0).'];
+  out.push(
+    `Filter:            OI >= ${oi.minOpenInterestUsdt} USDT; missing data → ${oi.missingPolicy === 'reject' ? 'candidate rejected' : 'filter ignored'}`,
+    `Coverage:          ${oi.found}/${oi.lookups} candidate lookups had OI${oi.coveragePercent === null ? '' : ` (${oi.coveragePercent.toFixed(1)}%)`}; metrics days with data ${oi.daysWithData}/${oi.daysRequested}`,
+    `Rejected (no OI):  ${oi.rejectedMissing}`,
+  );
+  const gaps = Object.entries(oi.bySymbol || {}).filter(([, s]) => s.found < s.lookups).sort((a, b) => (b[1].lookups - b[1].found) - (a[1].lookups - a[1].found));
+  if (gaps.length) out.push(`Missing by symbol: ${gaps.map(([sym, s]) => `${sym} ${s.lookups - s.found}/${s.lookups}`).join(', ')}`);
+  return out;
+}
+
 function tallyLines(tally) {
   const entries = Object.entries(tally).sort((a, b) => b[1] - a[1]);
   if (!entries.length) return ['  (none)'];
@@ -182,7 +260,7 @@ export function formatBacktestReport(report) {
     '',
     `Label:      ${run.label}`,
     `Strategy:   ${run.strategy_id}`,
-    `Symbols:    ${symbols}`,
+    `Symbols:    ${report.universe?.mode === 'dynamic' ? `${report.universe.members.length} over the run (see UNIVERSE)` : symbols}`,
     `Range:      ${new Date(Number(run.date_from_ms)).toISOString()} -> ${new Date(Number(run.date_to_ms)).toISOString()} (${report.days.toFixed(1)} days)`,
     `Costs:      slippage ${Number(run.slippage_percent)}% + fee ${Number(run.fee_percent)}% per side`,
     `Status:     ${run.status}${run.error ? ` (${run.error})` : ''}`,
@@ -193,6 +271,19 @@ export function formatBacktestReport(report) {
     '',
     `📈 SUMMARY${report.openTrades ? ` (+${report.openTrades} still open)` : ''}`, line,
     ...statsLines(report.overall),
+    '',
+    ...universeLines(report.universe, line),
+    ...oiLines(report.universe.oi, line),
+    '',
+    '🧩 CORE WATCHLIST vs DYNAMIC SYMBOLS', line,
+    compactLine('core', report.universe.results.core),
+    compactLine('dynamic', report.universe.results.dynamic),
+    '',
+    '  Core watchlist:',
+    ...statsLines(report.universe.results.core).map(l => `  ${l}`),
+    '',
+    '  Dynamic symbols:',
+    ...statsLines(report.universe.results.dynamic).map(l => `  ${l}`),
     '',
     '🧭 BY DIRECTION', line,
     ...[...report.byDirection].map(([d, s]) => compactLine(d, s)),

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { summarizeTrades, aggregateOutcomes, summarizeOutcomes, buildBacktestReport, formatBacktestReport } from '../src/backtest/report.js';
+import { summarizeTrades, aggregateOutcomes, summarizeOutcomes, buildBacktestReport, formatBacktestReport, summarizeUniverse } from '../src/backtest/report.js';
 import { runBacktest } from '../src/backtest/runner.js';
 import { installFakePool } from './helpers/fakePool.js';
 import { stubHistory, M15, H1, ampleOpenInterest } from './helpers/history.js';
@@ -81,6 +81,7 @@ function installBacktestDb(strat, id) {
     }
     if (/UPDATE backtest_balance/.test(text)) { db.balance = { balance_usdt: String(p[0]), equity_curve_json: JSON.parse(p[8]) }; return []; }
     if (/SET signal_outcomes_json/.test(text)) { db.run.signal_outcomes_json = JSON.parse(p[0]); return []; }
+    if (/SET params_json/.test(text)) { db.run.params_json = JSON.parse(p[0]); return []; }
     if (/UPDATE backtest_runs/.test(text)) { db.run.status = p[0]; return []; }
     if (/FROM backtest_runs/.test(text)) return [db.run];
     if (/FROM backtest_balance/.test(text)) return [db.balance];
@@ -118,8 +119,56 @@ test('report after a backtest: trades, R, exits and rejected signals per reason,
   assert.equal(report.signals.overall['rejected:not_selected'], 1);
   assert.deepEqual(report.signals.bySymbol.BBB, { 'rejected:not_selected': 1 });
 
+  assert.equal(report.universe.mode, 'fixed');
+  assert.equal(report.universe.results.core.trades, closed.length, 'fixed: every symbol is core');
+  assert.equal(report.universe.results.dynamic.trades, 0);
+  assert.equal(report.universe.oi.minOpenInterestUsdt, 10_000_000);
+
   const text = formatBacktestReport(report);
-  for (const needle of ['SUMMARY', 'BY DIRECTION', 'BY SYMBOL', 'SIGNALS NOT TAKEN', 'not_selected', 'Expectancy:', 'Profit factor:', 'Max drawdown:', 'LIQ_GUARD 0']) {
+  for (const needle of ['UNIVERSE', 'OPEN INTEREST DATA', 'CORE WATCHLIST vs DYNAMIC', 'SUMMARY', 'BY DIRECTION', 'BY SYMBOL', 'SIGNALS NOT TAKEN', 'not_selected', 'Expectancy:', 'Profit factor:', 'Max drawdown:', 'LIQ_GUARD 0']) {
     assert.ok(text.includes(needle), `report text missing "${needle}"`);
+  }
+});
+
+test('dynamic report: members with total time, delisted count, OI coverage, core vs dynamic results', () => {
+  const H = 3_600_000;
+  const params = {
+    universe: {
+      mode: 'dynamic', core: ['BTCUSDT'], delisted: ['GONEUSDT'], excludedUnknownType: ['OLDUSDT'],
+      stats: { ticks: 96, avgSize: 3.5, maxSize: 4 },
+      members: [
+        { symbol: 'BTCUSDT', totalMs: 24 * H, intervals: [[0, 24 * H]] },
+        { symbol: 'MOVEUSDT', totalMs: 5 * H, intervals: [[0, 2 * H], [10 * H, 13 * H]] },
+        { symbol: 'GONEUSDT', totalMs: 30 * 24 * H, intervals: [[0, 30 * 24 * H]] },
+      ],
+      events: [[0, 'BTCUSDT', '+'], [0, 'MOVEUSDT', '+'], [2 * H, 'MOVEUSDT', '-']],
+    },
+    openInterest: { minOpenInterestUsdt: 1e7, missingPolicy: 'reject', lookups: 4, found: 3, missing: 1, daysRequested: 2, daysWithData: 1,
+      rejectedMissing: 1, bySymbol: { MOVEUSDT: { lookups: 2, found: 1 }, BTCUSDT: { lookups: 2, found: 2 } } },
+  };
+  const closed = [
+    pos({ symbol: 'BTCUSDT', closed_at_ms: '1', pnl_usdt: '10', pnl_r: '1' }),
+    pos({ symbol: 'MOVEUSDT', closed_at_ms: '2', pnl_usdt: '-5', pnl_r: '-0.5', exit_reason: 'SL' }),
+    pos({ symbol: 'GONEUSDT', closed_at_ms: '3', pnl_usdt: '20', pnl_r: '2' }),
+  ];
+  const u = summarizeUniverse(params, closed, { days: 1, startingBalance: 1000 });
+  assert.deepEqual(u.members.map(m => [m.symbol, m.intervals]), [['GONEUSDT', 1], ['BTCUSDT', 1], ['MOVEUSDT', 2]], 'longest first');
+  assert.deepEqual(u.delisted, ['GONEUSDT']);
+  assert.equal(u.dynamicCount, 2);
+  assert.equal(u.oi.coveragePercent, 75);
+  assert.equal(u.results.core.trades, 1);
+  assert.equal(u.results.dynamic.trades, 2);
+  close(u.results.dynamic.expectancyR, 0.75);
+  assert.equal(u.results.dynamic.exits.SL, 1);
+
+  const text = formatBacktestReport({
+    run: { id: 7, label: 'x', strategy_id: 's', symbols_json: ['BTCUSDT', 'MOVEUSDT', 'GONEUSDT'], date_from_ms: '0', date_to_ms: String(24 * H), slippage_percent: '0.03', fee_percent: '0.05', status: 'completed' },
+    startingBalance: 1000, finalBalance: 1025, totalReturn: 2.5, days: 1, openTrades: 0,
+    overall: summarizeTrades(closed, { days: 1, startingBalance: 1000 }),
+    byDirection: new Map(), bySymbol: new Map(), signals: summarizeOutcomes([]), equityCurve: [], universe: u,
+  });
+  for (const needle of ['Mode:              dynamic', 'Delisted entered:  1 (GONEUSDT)', 'GONEUSDT †', '30.0d', 'MOVEUSDT', '5.0h',
+    '3/4 candidate lookups had OI (75.0%)', 'Rejected (no OI):  1', 'MOVEUSDT 1/2', 'OLDUSDT', 'Dynamic symbols:', '3 over the run']) {
+    assert.ok(text.includes(needle), `missing "${needle}"`);
   }
 });
