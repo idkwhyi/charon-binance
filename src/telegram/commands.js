@@ -205,19 +205,10 @@ async function handleWatch(msg, args) {
   const { added } = await addToWatchlist(symbol);
   if (!added) return reply(msg, `ℹ️ <code>${symbol}</code> sudah ada di watchlist.`);
 
-  // Warmup klines for new symbol
-  try {
-    const { fetchKlines } = await import('../enrichment/binance.js');
-    const k5m  = await fetchKlines(symbol, '5m',  50);
-    const k15m = await fetchKlines(symbol, '15m', 50);
-    const { klineCache } = await import('../signals/scanner.js').catch(() => ({}));
-    // Reconnect WS to include new symbol
-    reconnectWebSocket();
-    await reply(msg, `✅ <code>${symbol}</code> ditambahkan ke watchlist 📌\nWebSocket reconnecting...`);
-  } catch (err) {
-    reconnectWebSocket();
-    await reply(msg, `✅ <code>${symbol}</code> ditambahkan ke watchlist 📌`);
-  }
+  // No warmup needed: scanSignals fetches klines for symbols missing from the cache.
+  // Reconnect WS to include new symbol
+  reconnectWebSocket();
+  await reply(msg, `✅ <code>${symbol}</code> ditambahkan ke watchlist 📌\nWebSocket reconnecting...`);
 }
 
 async function handleUnwatch(msg, args) {
