@@ -16,7 +16,6 @@ import { checkAndMarkSeen } from './dedup.js';
 import { planEntry } from './entryPlan.js';
 import { resolveAvailableBalance } from './candidateBuilder.js';
 import { fetchPremiumIndex, fetchFuturesBalance } from '../enrichment/binance.js';
-import { updateUniverse } from '../enrichment/topGainers.js';
 import { getVirtualBalance } from '../db/virtualBalance.js';
 import { utcDayStartMs, dailyLossStatus, directionCapReached } from './riskControls.js';
 import { RISK_PERCENT_PER_TRADE, MAX_MARGIN_PERCENT_PER_TRADE, SIM_SLIPPAGE_PERCENT, DAILY_LOSS_LIMIT_PERCENT, MAX_SAME_DIRECTION_POSITIONS } from '../config.js';
@@ -33,15 +32,10 @@ export { seenSignals } from './dedup.js';
  * - Rule-based path (default): build + filter every signal, then a
  *   deterministic selector opens at most ONE new entry for the whole cycle.
  *
- * Universe update (top gainer screener) runs at each cycle; only refreshes
- * watchlist if 15+ min have passed since last update.
+ * The universe is refreshed by scanSignals before the scan (not here: this
+ * handler only runs on cycles that produced signals).
  */
 export async function processScanCycle(rawSignals) {
-  // Update universe (top gainers) — runs at 15m+ intervals
-  await updateUniverse().catch(err =>
-    console.log(`[orchestrator] universe update failed: ${err.message}`)
-  );
-
   const strat = await activeStrategy();
 
   const block = await entryBlock();

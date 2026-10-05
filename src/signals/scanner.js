@@ -10,6 +10,7 @@ import { closedOnly, mergeCandle, parseClosedKlineMessage, findGaps, INTERVAL_MS
 import { recordSignalEvent } from '../db/signalEvents.js';
 import { SIGNAL_TYPE_REJECT } from './extremeOB.js';
 import { markDetectorOutcome } from '../pipeline/dedup.js';
+import { updateUniverse } from '../enrichment/topGainers.js';
 
 let cycleHandler = null;
 let ws = null;
@@ -53,6 +54,16 @@ export async function warmupKlines() {
  * Scan all symbols in watchlist using cached 1h + 15m klines + live enrichment.
  */
 export async function scanSignals() {
+  // Universe first (refreshes once per 15m close, a no-op otherwise), so the scan
+  // right after a close already runs on that close's universe — every cycle,
+  // whether or not it ends up with signals. Same order as the backtest.
+  const universe = await updateUniverse().catch(err => {
+    console.log(`[scanner] universe update failed: ${err.message}`);
+    return null;
+  });
+  // Subscribe the WebSocket to the new list (only once it has been started)
+  if (ws && (universe?.added.length || universe?.removed.length)) reconnectWebSocket();
+
   const strat = await activeStrategy();
   const allowedSignals = (strat.signal_types || '').split(',').map(s => s.trim());
   const watchlist = await getWatchlist();

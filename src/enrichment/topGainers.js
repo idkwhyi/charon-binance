@@ -37,8 +37,8 @@ function last15mCandle(nowMs) {
 
 /**
  * Update the universe exactly once per 15m candle close (:00/:15/:30/:45 UTC).
- * Called from orchestrator at each scan cycle (every 30s). Only updates if a new
- * 15m candle has closed since the last update, and before signal evaluation.
+ * Called at the start of every scanSignals() (every 30s), before the watchlist
+ * is read. Only updates if a new 15m candle has closed since the last update.
  * @param {boolean} force - bypass candle check (used on startup)
  * @returns {Promise<{updated: boolean, symbols: string[], added: string[], removed: string[]}>}
  */
