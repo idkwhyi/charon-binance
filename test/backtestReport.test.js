@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { summarizeTrades, aggregateOutcomes, summarizeOutcomes, buildBacktestReport, formatBacktestReport } from '../src/backtest/report.js';
 import { runBacktest } from '../src/backtest/runner.js';
 import { installFakePool } from './helpers/fakePool.js';
-import { stubHistory, M15, H1 } from './helpers/history.js';
+import { stubHistory, M15, H1, ampleOpenInterest } from './helpers/history.js';
 
 const close = (a, b, eps = 1e-9) => assert.ok(Math.abs(a - b) < eps, `${a} != ${b}`);
 const pos = (o) => ({ symbol: 'AAA', direction: 'LONG', exit_reason: 'TP', fee_usdt: '0.1', slippage_usdt: '0.05', ...o });
@@ -101,7 +101,7 @@ test('report after a backtest: trades, R, exits and rejected signals per reason,
   });
   const log = console.log; console.log = () => {};
   try {
-    await runBacktest({ strategyId: 'report_test', symbols: ['AAA', 'BBB', 'CCC'], dateFromMs: D, dateToMs: D + 8 * H1,
+    await runBacktest({ openInterestSource: ampleOpenInterest(), strategyId: 'report_test', symbols: ['AAA', 'BBB', 'CCC'], dateFromMs: D, dateToMs: D + 8 * H1,
       startingBalance: 1000, cacheDir: mkdtempSync(join(tmpdir(), 'charon-bt-')) });
   } finally { console.log = log; restore(); }
 

@@ -10,7 +10,7 @@ import { runBacktest } from '../src/backtest/runner.js';
 import * as runner from '../src/backtest/runner.js';
 import { KLINE_STRICT_CONTINUITY_CANDLES_15M as N, KLINE_STRICT_CONTINUITY_CANDLES_1H as N1H } from '../src/config.js';
 import { installFakePool } from './helpers/fakePool.js';
-import { stubHistory, M15, H1 } from './helpers/history.js';
+import { stubHistory, M15, H1, ampleOpenInterest } from './helpers/history.js';
 
 const c = (openTime, step = M15, extra = {}) => ({ openTime, open: 100, high: 100.1, low: 99.9, close: 100, volume: 1, closeTime: openTime + step - 1, quoteVolume: 100, ...extra });
 const range = (from, to, step, extra) => { const out = []; for (let t = from; t <= to; t += step) out.push(c(t, step, extra?.(t))); return out; };
@@ -158,7 +158,7 @@ async function backtest(plan, holes) {
   const restore = stubHistory(plan, { holes });
   const log = console.log; console.log = () => {};
   try {
-    await runBacktest({ strategyId: id, symbols: Object.keys(plan), dateFromMs: D, dateToMs: D + 6 * H1, startingBalance: 1000,
+    await runBacktest({ openInterestSource: ampleOpenInterest(), strategyId: id, symbols: Object.keys(plan), dateFromMs: D, dateToMs: D + 6 * H1, startingBalance: 1000,
       cacheDir: mkdtempSync(join(tmpdir(), 'charon-bt-')) });
   } finally { console.log = log; restore(); }
   return { opened, outcomes: runner.lastRunRejections };

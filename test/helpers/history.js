@@ -32,3 +32,11 @@ export function stubHistory(plan, { holes = {} } = {}) {
   };
   return () => { axios.get = original; };
 }
+
+/** Open interest source that always has a large OI, for tests not about the OI filter. */
+export function ampleOpenInterest() {
+  return {
+    at: async () => ({ t: 0, sumOpenInterest: 1e12, sumOpenInterestValue: 1e14 }),
+    coverage: async () => ({ lookups: 0, found: 0, missing: 0, daysRequested: 0, daysWithData: 0, bySymbol: {} }),
+  };
+}

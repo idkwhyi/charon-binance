@@ -8,6 +8,7 @@ import { installFakePool } from './helpers/fakePool.js';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { ampleOpenInterest } from './helpers/history.js';
 
 const M1 = 60_000;
 const close = (a, b, eps = 1e-9) => assert.ok(Math.abs(a - b) < eps, `${a} != ${b}`);
@@ -108,7 +109,7 @@ test('backtest entry/exit are priced by the same simulation as dry-run', async (
   const origLog = console.log;
   console.log = () => {};
   try {
-    await runBacktest({ strategyId: 'bt_test', symbols: ['BTUSDT'], dateFromMs: D, dateToMs: D + 3 * 60 * M1, startingBalance: 1000,
+    await runBacktest({ openInterestSource: ampleOpenInterest(), strategyId: 'bt_test', symbols: ['BTUSDT'], dateFromMs: D, dateToMs: D + 3 * 60 * M1, startingBalance: 1000,
       cacheDir: mkdtempSync(join(tmpdir(), 'charon-bt-')) });
   } finally {
     console.log = origLog;

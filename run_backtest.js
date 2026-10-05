@@ -10,6 +10,11 @@ import { buildBacktestReport, printBacktestReport } from './src/backtest/report.
  * Run a new backtest:
  *   node run_backtest.js --symbols BTCUSDT,ETHUSDT --strategy scalp \
  *     --from 2026-01-01 --to 2026-06-01 [--balance 1000] [--label "my run"]
+ *     [--oi-missing reject|ignore]
+ *
+ * --oi-missing: what the strategy's min_open_interest_usdt filter does when the
+ *   data.binance.vision metrics archive has no OI for that symbol/time —
+ *   reject the candidate (default) or ignore the filter.
  *
  * Re-print the report for a past run without re-running it:
  *   node run_backtest.js --report 3
@@ -27,7 +32,7 @@ function parseArgs(argv) {
 }
 
 const USAGE = 'Usage:\n' +
-  '  node run_backtest.js --symbols BTCUSDT,ETHUSDT --strategy scalp --from 2026-01-01 --to 2026-06-01 [--balance 1000] [--label "my run"]\n' +
+  '  node run_backtest.js --symbols BTCUSDT,ETHUSDT --strategy scalp --from 2026-01-01 --to 2026-06-01 [--balance 1000] [--label "my run"] [--oi-missing reject|ignore]\n' +
   '  node run_backtest.js --report <runId>';
 
 async function main() {
@@ -59,6 +64,7 @@ async function main() {
       dateFromMs,
       dateToMs,
       startingBalance: Number(args.balance || 1000),
+      oiMissing: args['oi-missing'] || 'reject',
     });
   }
 

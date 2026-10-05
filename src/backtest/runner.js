@@ -19,6 +19,7 @@ import {
   closeBacktestPosition, saveBacktestBalance, saveBacktestSignalOutcomes, saveBacktestParams,
 } from '../db/backtest.js';
 import { UniverseTimeline } from './universeTimeline.js';
+import { createOpenInterestSource, OI_MAX_AGE_MS } from './metricsStore.js';
 import { aggregateOutcomes } from './report.js';
 
 const TICK_MS = 15 * 60_000;
@@ -121,11 +122,18 @@ export async function runBacktest(opts) {
   // Point-in-time universe (computeUniverseTimeline); default: every symbol, whole run
   const universe = opts.universe || UniverseTimeline.fixed(opts.symbols, dateFromMs, dateToMs, TICK_MS);
   const symbols = universe.symbols();
+  // Historical OI for min_open_interest_usdt (same filter as live). No OI for a
+  // symbol/time: 'reject' the candidate (default) or 'ignore' the filter.
+  const { oiMissing = 'reject', openInterestSource = null } = opts;
+  if (!['reject', 'ignore'].includes(oiMissing)) throw new Error(`oiMissing must be 'reject' or 'ignore', got '${oiMissing}'`);
   validateStrictContinuity(KLINE_STRICT_CONTINUITY); // same startup check as the bot
   const costs = { slippagePercent: SIM_SLIPPAGE_PERCENT, feePercent: SIM_TAKER_FEE_PERCENT };
 
   const strat = await strategyById(strategyId);
   const allowedSignals = (strat.signal_types || '').split(',').map(s => s.trim());
+  const minOpenInterestUsdt = Number(strat.min_open_interest_usdt) || 0;
+  const oiSource = minOpenInterestUsdt > 0 ? (openInterestSource || createOpenInterestSource()) : null;
+  let oiRejectedMissing = 0;
 
   const runId = await createBacktestRun({
     label, strategyId, symbols, dateFromMs, dateToMs,
@@ -284,9 +292,15 @@ export async function runBacktest(opts) {
       const prepared = [];
       for (const rawSignal of cycleSignals) {
         if (checkAndMarkSeen(rawSignal, t)) { reject(rawSignal, 'pipeline', 'dedup'); continue; }
+        // OI (contracts) at this 15m close; buildCandidate turns it into USDT at the mark price, as live does
+        if (oiSource) rawSignal.openInterest = (await oiSource.at(rawSignal.symbol, t))?.sumOpenInterest ?? null;
         const candidate = await buildCandidate(rawSignal, strat, balance.availableBalance);
-        candidate.filters = await filterCandidate(candidate, strat);
-        if (!candidate.filters.passed) { reject(rawSignal, 'pipeline', 'filter_failed'); continue; }
+        candidate.filters = await filterCandidate(candidate, strat, { oiMissing });
+        if (!candidate.filters.passed) {
+          if (oiSource && candidate.metrics.openInterestUsdt === null && oiMissing === 'reject') oiRejectedMissing++;
+          reject(rawSignal, 'pipeline', 'filter_failed');
+          continue;
+        }
         prepared.push(candidate);
       }
       if (prepared.length === 0) continue;
@@ -356,7 +370,14 @@ export async function runBacktest(opts) {
 
     await saveBacktestBalance(runId, balance);
     await saveBacktestSignalOutcomes(runId, aggregateOutcomes(rejections));
-    await saveBacktestParams(runId, { universe: universe.toJSON() });
+    await saveBacktestParams(runId, {
+      universe: universe.toJSON(),
+      openInterest: {
+        minOpenInterestUsdt, missingPolicy: oiMissing, maxAgeMs: OI_MAX_AGE_MS,
+        ...(oiSource ? await oiSource.coverage() : { lookups: 0, found: 0, missing: 0, daysRequested: 0, daysWithData: 0, bySymbol: {} }),
+        rejectedMissing: oiRejectedMissing,
+      },
+    });
     await finishBacktestRun(runId, 'completed');
     lastRunRejections = rejections;
     console.log(`[backtest] run #${runId} completed | trades=${balance.totalTrades} | final balance=${balance.balanceUsdt.toFixed(2)} USDT`);

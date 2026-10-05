@@ -9,7 +9,7 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { stubHistory, M1, M15, H1 } from './helpers/history.js';
+import { stubHistory, M1, M15, H1, ampleOpenInterest } from './helpers/history.js';
 
 // ── portfolioGates (pure) ─────────────────────────────────────────────────────
 
@@ -52,7 +52,7 @@ async function run(plan, { hours = 8, strat: stratOver = {} } = {}) {
   const restore = stubHistory(plan);
   const log = console.log; console.log = () => {};
   try {
-    await runBacktest({ strategyId: id, symbols: Object.keys(plan), dateFromMs: D, dateToMs: D + hours * H1, startingBalance: 1000,
+    await runBacktest({ openInterestSource: ampleOpenInterest(), strategyId: id, symbols: Object.keys(plan), dateFromMs: D, dateToMs: D + hours * H1, startingBalance: 1000,
       cacheDir: mkdtempSync(join(tmpdir(), 'charon-bt-')) });
   } finally { console.log = log; restore(); }
   return { opened, rejected: runner.lastRunRejections.filter(r => r.outcome === 'rejected' && r.stage !== 'detector') };

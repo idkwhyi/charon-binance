@@ -117,9 +117,13 @@ export async function buildCandidate(signal, strategyOverride = null, balanceOve
 /**
  * Apply strategy filters to a candidate.
  * @param {object|null} strategyOverride - see buildCandidate.
+ * @param {object} [opts]
+ * @param {'ignore'|'reject'} [opts.oiMissing] - what min_open_interest_usdt does when the
+ *   candidate has no OI: 'ignore' skips the check (live: OI fetch failed), 'reject'
+ *   fails it (backtest default: no historical OI for that symbol/time).
  * Returns { passed: boolean, failures: string[] }
  */
-export async function filterCandidate(candidate, strategyOverride = null) {
+export async function filterCandidate(candidate, strategyOverride = null, { oiMissing = 'ignore' } = {}) {
   const strat = strategyOverride || await activeStrategy();
   const failures = [];
 
@@ -141,8 +145,12 @@ export async function filterCandidate(candidate, strategyOverride = null) {
   }
 
   // Min open interest
-  if (strat.min_open_interest_usdt > 0 && openInterestUsdt !== null && openInterestUsdt < strat.min_open_interest_usdt) {
-    failures.push(`open interest: $${openInterestUsdt?.toFixed(0)} < min $${strat.min_open_interest_usdt}`);
+  if (strat.min_open_interest_usdt > 0) {
+    if (openInterestUsdt === null) {
+      if (oiMissing === 'reject') failures.push(`open interest: no data (min $${strat.min_open_interest_usdt})`);
+    } else if (openInterestUsdt < strat.min_open_interest_usdt) {
+      failures.push(`open interest: $${openInterestUsdt.toFixed(0)} < min $${strat.min_open_interest_usdt}`);
+    }
   }
 
   // Signal type gate

@@ -8,7 +8,7 @@ import { UNIVERSE_RULES, ticker24hFromKlines15m } from '../src/universe/rules.js
 import { runBacktest } from '../src/backtest/runner.js';
 import * as runner from '../src/backtest/runner.js';
 import { installFakePool } from './helpers/fakePool.js';
-import { stubHistory, M1, H1 } from './helpers/history.js';
+import { stubHistory, M1, H1, ampleOpenInterest } from './helpers/history.js';
 
 const M15 = 15 * 60_000, DAY = 86_400_000;
 const T0 = Date.UTC(2025, 5, 2); // first tick
@@ -137,7 +137,7 @@ test('runner: signals only for symbols in the universe at that 15m close', async
   const restore = stubHistory({ AAA: [{ spikeAt: D + 30 * M1 }, { spikeAt: D + 3 * H1 }], BBB: [{ spikeAt: D + 30 * M1 }] });
   const log = console.log; console.log = () => {};
   try {
-    await runBacktest({ strategyId: id, universe, dateFromMs: D, dateToMs: D + 8 * H1, startingBalance: 1000,
+    await runBacktest({ openInterestSource: ampleOpenInterest(), strategyId: id, universe, dateFromMs: D, dateToMs: D + 8 * H1, startingBalance: 1000,
       cacheDir: mkdtempSync(join(tmpdir(), 'charon-bt-')) });
   } finally { console.log = log; restore(); }
   assert.deepEqual(opened.map(o => [o.symbol, o.openedAt]), [['BBB', D + 45 * M1], ['AAA', D + 3 * H1 + 15 * M1]]);
