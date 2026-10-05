@@ -16,7 +16,7 @@ import { openPositionsList, candidateSummary } from './format.js';
 import { sendTelegram, sendPositionOpen } from './send.js';
 import { fmtUsd, fmtPct, escapeHtml } from '../format.js';
 import { getWatchlist, addToWatchlist, removeFromWatchlist, getPinnedSymbols } from '../db/watchlist.js';
-import { refreshTopGainers } from '../enrichment/topGainers.js';
+import { updateUniverse } from '../enrichment/topGainers.js';
 import { reconnectWebSocket, warmupKlines } from '../signals/scanner.js';
 import { getVirtualBalanceStats, getBalanceSummary, resetVirtualBalance, initializeVirtualBalance } from '../db/virtualBalance.js';
 import { addLesson, getActiveLessons, confidenceCalibration, confidenceCalibrationBy } from '../db/learning.js';
@@ -230,20 +230,20 @@ async function handleUnwatch(msg, args) {
 }
 
 async function handleTopGainers(msg) {
-  await reply(msg, '📡 Fetching top gainers dari Binance...');
-  try {
-    const after = await refreshTopGainers(false);
-    const watchlist = await getWatchlist();
-    await reply(msg, [
-      `✅ <b>Top Gainers Refreshed</b>`,
-      `Watchlist sekarang: <b>${watchlist.length} symbols</b>`,
-      `<code>${watchlist.join(', ')}</code>`,
-    ].join('\n'));
-    // Reconnect WS with updated list
-    reconnectWebSocket();
-  } catch (err) {
-    await reply(msg, `❌ Gagal fetch top gainers: ${escapeHtml(err.message)}`);
+  await reply(msg, '📡 Refreshing universe dari Binance...');
+  // Same refresh the orchestrator runs at every 15m close (src/universe/rules.js)
+  const { updated, symbols, added, removed } = await updateUniverse(true);
+  if (!updated) {
+    await reply(msg, '❌ Universe tidak ter-update (screener nonaktif, tidak ada mover yang lolos, atau fetch gagal — cek log).');
+    return;
   }
+  await reply(msg, [
+    `✅ <b>Universe Refreshed</b>`,
+    `Watchlist sekarang: <b>${symbols.length} symbols</b> (+${added.length} -${removed.length})`,
+    `<code>${symbols.join(', ')}</code>`,
+  ].join('\n'));
+  // Reconnect WS with updated list
+  reconnectWebSocket();
 }
 
 async function handleScan(msg) {

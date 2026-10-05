@@ -82,7 +82,7 @@ export async function updateUniverse(force = false) {
     const removed = before.filter(s => !after.includes(s));
 
     if (added.length > 0 || removed.length > 0) {
-      console.log(`[universe] updated at ${new Date(now).toISOString()}: ${after.length} symbols (+${added.length} -${removed.length})`);
+      console.log(`[universe] updated at ${new Date(current15mMs).toISOString()}: ${after.length} symbols (+${added.length} -${removed.length})`);
 
       const lines = [
         `📡 <b>Watchlist Auto-Updated</b>`,
