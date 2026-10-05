@@ -56,6 +56,12 @@ export function universeCriteria({
   };
 }
 
+/** Name-level rules: USDT-quoted and not a stablecoin pair. */
+export function isEligibleSymbolName(symbol) {
+  const sym = String(symbol || '');
+  return sym.endsWith('USDT') && !STABLECOIN_PAIRS.has(sym);
+}
+
 /** Allowlist: true only for exchange info with underlyingType 'COIN'. */
 export function isCoinUnderlying(exchangeInfo) {
   return exchangeInfo?.underlyingType === 'COIN';
@@ -89,8 +95,7 @@ export function passesCriteria(ticker, criteria, exchangeInfo = null) {
   const oi = Number(ticker.openInterest || 0);
 
   return (
-    sym.endsWith('USDT') &&
-    !STABLECOIN_PAIRS.has(sym) &&
+    isEligibleSymbolName(sym) &&
     vol >= criteria.minVolume24hUsdt &&
     pct >= criteria.minAbsChangePercent &&
     (criteria.minOpenInterestUsdt <= 0 || oi >= criteria.minOpenInterestUsdt) &&

@@ -16,8 +16,9 @@ import {
 } from '../config.js';
 import {
   createBacktestRun, finishBacktestRun, openBacktestPosition,
-  closeBacktestPosition, saveBacktestBalance, saveBacktestSignalOutcomes,
+  closeBacktestPosition, saveBacktestBalance, saveBacktestSignalOutcomes, saveBacktestParams,
 } from '../db/backtest.js';
+import { UniverseTimeline } from './universeTimeline.js';
 import { aggregateOutcomes } from './report.js';
 
 const TICK_MS = 15 * 60_000;
@@ -112,12 +113,14 @@ export async function runBacktest(opts) {
   const {
     label = `backtest-${Date.now()}`,
     strategyId,
-    symbols,
     dateFromMs,
     dateToMs,
     startingBalance = 1000,
     cacheDir = DEFAULT_CACHE_DIR,
   } = opts;
+  // Point-in-time universe (computeUniverseTimeline); default: every symbol, whole run
+  const universe = opts.universe || UniverseTimeline.fixed(opts.symbols, dateFromMs, dateToMs, TICK_MS);
+  const symbols = universe.symbols();
   validateStrictContinuity(KLINE_STRICT_CONTINUITY); // same startup check as the bot
   const costs = { slippagePercent: SIM_SLIPPAGE_PERCENT, feePercent: SIM_TAKER_FEE_PERCENT };
 
@@ -219,6 +222,7 @@ export async function runBacktest(opts) {
       // 2) Collect this cycle's signals across symbols (as the live scanner does)
       const cycleSignals = [];
       for (const symbol of symbols) {
+        if (!universe.isMember(symbol, t)) continue; // not in the universe at this 15m close
         const d = data[symbol];
         if (d.ptr15m < WARMUP_15M_CANDLES || d.ptr1h < WARMUP_1H_CANDLES) continue;
 
@@ -352,6 +356,7 @@ export async function runBacktest(opts) {
 
     await saveBacktestBalance(runId, balance);
     await saveBacktestSignalOutcomes(runId, aggregateOutcomes(rejections));
+    await saveBacktestParams(runId, { universe: universe.toJSON() });
     await finishBacktestRun(runId, 'completed');
     lastRunRejections = rejections;
     console.log(`[backtest] run #${runId} completed | trades=${balance.totalTrades} | final balance=${balance.balanceUsdt.toFixed(2)} USDT`);

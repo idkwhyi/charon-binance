@@ -59,6 +59,11 @@ export async function closeBacktestPosition(id, { exitPrice, exitReason, pnlPerc
   `, [exitPrice, exitReason, pnlPercent, pnlUsdt, feeUsdt, closedAtMs, id, slippageUsdt, pnlR]);
 }
 
+/** Run metadata known only after the run (universe membership, OI coverage). */
+export async function saveBacktestParams(runId, params) {
+  await pgQuery('UPDATE backtest_runs SET params_json = $1::jsonb WHERE id = $2', [json(params), runId]);
+}
+
 /** Aggregated signal outcomes of a run (see aggregateOutcomes in report.js). */
 export async function saveBacktestSignalOutcomes(runId, outcomes) {
   await pgQuery('UPDATE backtest_runs SET signal_outcomes_json = $1::jsonb WHERE id = $2', [json(outcomes), runId]);
