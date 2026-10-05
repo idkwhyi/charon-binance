@@ -1,6 +1,6 @@
 import WebSocket from 'ws';
 import { BINANCE_FUTURES_WS_URL, KLINE_STRICT_CONTINUITY } from '../config.js';
-import { fetchKlines, fetchKlinesSince, fetchPremiumIndex, fetchOpenInterest, fetchTicker24h } from '../enrichment/binance.js';
+import { fetchKlines, fetchKlinesSince, fetchPremiumIndex, fetchOpenInterestWithRetry, fetchTicker24h } from '../enrichment/binance.js';
 import { runIndicators } from './indicators.js';
 import { activeStrategy } from '../db/settings.js';
 import { getWatchlist } from '../db/watchlist.js';
@@ -173,7 +173,8 @@ export async function scanSignals() {
 
       // Fetch enrichment data
       const ticker = await fetchTicker24h(symbol);
-      const oi = await fetchOpenInterest(symbol).catch(() => null);
+      // One retry; still unavailable -> null, and filterCandidate rejects with OI_UNAVAILABLE
+      const openInterest = await fetchOpenInterestWithRetry(symbol);
 
       // Collect each triggered signal; handed to the cycle handler after the loop
       for (const signal of triggered) {
@@ -186,7 +187,7 @@ export async function scanSignals() {
           klines1h,
           klines15m,
           fundingRate,
-          openInterest: oi ? Number(oi.openInterest) : null,
+          openInterest,
           detectedAt: now(),
         });
       }

@@ -167,6 +167,27 @@ export async function fetchOpenInterest(symbol) {
 }
 
 /**
+ * Open interest (contracts) for a symbol, retried `retries` times after a
+ * short pause; null when still unavailable (callers reject the candidate
+ * with OI_UNAVAILABLE instead of skipping the OI filter).
+ */
+export async function fetchOpenInterestWithRetry(symbol, { retries = 1, pauseMs = 500, fetch = fetchOpenInterest } = {}) {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      const oi = Number((await fetch(symbol))?.openInterest);
+      if (Number.isFinite(oi) && oi > 0) return oi;
+      throw new Error('no openInterest in response');
+    } catch (err) {
+      if (attempt >= retries) {
+        console.log(`[binance] open interest ${symbol} unavailable after ${attempt + 1} attempt(s): ${err.message}`);
+        return null;
+      }
+      await sleep(pauseMs);
+    }
+  }
+}
+
+/**
  * Public: exchange info `symbols` array for every USDⓈ-M contract
  * (underlyingType, contractType, status, precision, filters).
  */

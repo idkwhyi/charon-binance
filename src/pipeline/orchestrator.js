@@ -112,7 +112,8 @@ async function prepareCandidate(rawSignal, strat) {
   const candidateId = await upsertCandidate(candidate);
   if (!candidate.filters.passed) {
     console.log(`[candidate] filtered ${candidate.symbol} (${candidate.signalType}): ${candidate.filters.failures.join('; ')}`);
-    await recordSignalEvent(candidate, { stage: 'pipeline', outcome: 'rejected', reasonCode: 'filter_failed',
+    // OI_UNAVAILABLE: min_open_interest_usdt set but OI could not be fetched (after a retry)
+    await recordSignalEvent(candidate, { stage: 'pipeline', outcome: 'rejected', reasonCode: candidate.filters.reasonCode,
       reason: candidate.filters.failures.join('; '), candidateId, details: { failures: candidate.filters.failures } });
     return null;
   }

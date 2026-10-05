@@ -11,7 +11,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { DEFAULT_CACHE_DIR } from './klineStore.js';
-import { defaultHttp, fetchZipCsv, parseMetricsCsv, dailyMetricsPath, DAY_MS, dayStart, isoDay } from './vision.js';
+import { defaultHttp, fetchZipCsv, parseMetricsCsv, dailyMetricsPath, listS3, UM_DAILY_METRICS, DAY_MS, dayStart, isoDay } from './vision.js';
 
 export const DEFAULT_METRICS_DIR = path.join(path.dirname(DEFAULT_CACHE_DIR), 'metrics');
 export const OI_MAX_AGE_MS = 30 * 60_000; // a value older than this at signal time counts as missing
@@ -49,6 +49,13 @@ export async function getMetricsDay(symbol, dayMs, { dir = DEFAULT_METRICS_DIR, 
   await writeDay(dir, symbol, dayMs, { symbol, day: isoDay(dayMs), fetchedAt: nowMs, missing: false,
     rows: rows.map(r => [r.t, r.sumOpenInterest, r.sumOpenInterestValue]) });
   return rows;
+}
+
+/** First day the metrics (OI) archive has for a symbol, or null. One small listing. */
+export async function earliestMetricsDay(symbol, { http = defaultHttp } = {}) {
+  const { keys } = await listS3(`${UM_DAILY_METRICS}${symbol}/`, { http, delimiter: false, maxKeys: 5 });
+  const days = keys.map(k => k.match(/-metrics-(\d{4}-\d{2}-\d{2})\.zip$/)?.[1]).filter(Boolean).sort();
+  return days[0] ?? null;
 }
 
 /** Latest row at or before tMs, if not older than maxAgeMs; else null. */

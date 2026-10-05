@@ -114,18 +114,22 @@ export async function buildCandidate(signal, strategyOverride = null, balanceOve
   };
 }
 
+/** Reason code when min_open_interest_usdt can't be checked because OI is unavailable (live and backtest). */
+export const OI_UNAVAILABLE = 'OI_UNAVAILABLE';
+
 /**
  * Apply strategy filters to a candidate.
  * @param {object|null} strategyOverride - see buildCandidate.
  * @param {object} [opts]
- * @param {'ignore'|'reject'} [opts.oiMissing] - what min_open_interest_usdt does when the
- *   candidate has no OI: 'ignore' skips the check (live: OI fetch failed), 'reject'
- *   fails it (backtest default: no historical OI for that symbol/time).
- * Returns { passed: boolean, failures: string[] }
+ * @param {'reject'|'ignore'} [opts.oiMissing] - what min_open_interest_usdt does when the
+ *   candidate has no OI (live: fetch failed after a retry; backtest: no archived OI):
+ *   'reject' (default, live and backtest) or 'ignore' the check (backtest --oi-missing ignore).
+ * Returns { passed: boolean, failures: string[], reasonCode: null | 'OI_UNAVAILABLE' | 'filter_failed' }
  */
-export async function filterCandidate(candidate, strategyOverride = null, { oiMissing = 'ignore' } = {}) {
+export async function filterCandidate(candidate, strategyOverride = null, { oiMissing = 'reject' } = {}) {
   const strat = strategyOverride || await activeStrategy();
   const failures = [];
+  let oiUnavailable = false;
 
   const { markPrice, volume24hUsdt, openInterestUsdt, fundingRate, lastKlineVolume } = candidate.metrics;
 
@@ -147,7 +151,10 @@ export async function filterCandidate(candidate, strategyOverride = null, { oiMi
   // Min open interest
   if (strat.min_open_interest_usdt > 0) {
     if (openInterestUsdt === null) {
-      if (oiMissing === 'reject') failures.push(`open interest: no data (min $${strat.min_open_interest_usdt})`);
+      if (oiMissing === 'reject') {
+        oiUnavailable = true;
+        failures.push(`open interest: unavailable (min $${strat.min_open_interest_usdt})`);
+      }
     } else if (openInterestUsdt < strat.min_open_interest_usdt) {
       failures.push(`open interest: $${openInterestUsdt.toFixed(0)} < min $${strat.min_open_interest_usdt}`);
     }
@@ -175,5 +182,6 @@ export async function filterCandidate(candidate, strategyOverride = null, { oiMi
     }
   }
 
-  return { passed: failures.length === 0, failures, strategy: strat.id };
+  const reasonCode = failures.length === 0 ? null : oiUnavailable ? OI_UNAVAILABLE : 'filter_failed';
+  return { passed: failures.length === 0, failures, strategy: strat.id, reasonCode };
 }

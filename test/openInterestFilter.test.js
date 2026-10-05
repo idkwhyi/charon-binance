@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { getMetricsDay, openInterestAt, createOpenInterestSource } from '../src/backtest/metricsStore.js';
+import { getMetricsDay, openInterestAt, createOpenInterestSource, earliestMetricsDay } from '../src/backtest/metricsStore.js';
 import { dailyMetricsPath } from '../src/backtest/vision.js';
 import { filterCandidate } from '../src/pipeline/candidateBuilder.js';
 import { runBacktest } from '../src/backtest/runner.js';
@@ -57,9 +57,11 @@ test('OI source: just after midnight the previous day is used; coverage counts l
 test('filterCandidate: missing OI rejected or ignored by policy; low OI always rejected', async () => {
   const strat = { min_open_interest_usdt: 10e6, signal_types: 'volume_spike', leverage: 5 };
   const cand = oi => ({ signalType: 'volume_spike', metrics: { markPrice: 100, volume24hUsdt: 1e9, openInterestUsdt: oi } });
-  assert.equal((await filterCandidate(cand(null), strat)).passed, true, "live default 'ignore'");
-  const rej = await filterCandidate(cand(null), strat, { oiMissing: 'reject' });
-  assert.deepEqual(rej.failures, ['open interest: no data (min $10000000)']);
+  const rej = await filterCandidate(cand(null), strat);
+  assert.deepEqual([rej.passed, rej.reasonCode, rej.failures], [false, 'OI_UNAVAILABLE', ['open interest: unavailable (min $10000000)']], "default 'reject', live and backtest");
+  assert.equal((await filterCandidate(cand(null), strat, { oiMissing: 'ignore' })).passed, true);
+  assert.equal((await filterCandidate(cand(5e6), strat)).reasonCode, 'filter_failed');
+  assert.equal((await filterCandidate(cand(null), { ...strat, min_open_interest_usdt: 0 })).passed, true, 'no OI filter: OI not needed');
   assert.equal((await filterCandidate(cand(5e6), strat, { oiMissing: 'ignore' })).passed, false);
   assert.equal((await filterCandidate(cand(20e6), strat, { oiMissing: 'reject' })).passed, true);
 });
@@ -88,13 +90,15 @@ async function runWithOi(oiMissing) {
     await runBacktest({ strategyId: id, symbols: ['AAA', 'BBB', 'CCC'], dateFromMs: D, dateToMs: D + 6 * H1, startingBalance: 1000,
       cacheDir: tmp(), oiMissing, openInterestSource: createOpenInterestSource({ dir: tmp(), http, nowMs: D + 10 * DAY }) });
   } finally { console.log = log; restore(); }
-  return { opened, params, rejected: runner.lastRunRejections.filter(r => r.reasonCode === 'filter_failed').map(r => r.symbol) };
+  const codes = r => runner.lastRunRejections.filter(x => x.reasonCode === r).map(x => x.symbol);
+  return { opened, params, rejected: [...codes('filter_failed'), ...codes('OI_UNAVAILABLE')], unavailable: codes('OI_UNAVAILABLE') };
 }
 
 test('fixed universe (--symbols): historical OI filter applies; missing OI rejected by default', async () => {
-  const { opened, params, rejected } = await runWithOi('reject');
+  const { opened, params, rejected, unavailable } = await runWithOi('reject');
   assert.deepEqual(opened, ['AAA']);
   assert.deepEqual(rejected, ['BBB', 'CCC']);
+  assert.deepEqual(unavailable, ['CCC'], 'same reason code as live');
   assert.equal(params.openInterest.minOpenInterestUsdt, 10_000_000);
   assert.deepEqual([params.openInterest.lookups, params.openInterest.found, params.openInterest.rejectedMissing], [3, 2, 1]);
 });
@@ -103,4 +107,13 @@ test("fixed universe: oiMissing 'ignore' skips the filter only where OI is missi
   const { opened, rejected } = await runWithOi('ignore');
   assert.deepEqual(opened, ['AAA', 'CCC']);
   assert.deepEqual(rejected, ['BBB']);
+});
+
+test('earliestMetricsDay: first daily metrics file of a symbol (checksums ignored)', async () => {
+  const { http, requests } = fakeVision({
+    [dailyMetricsPath('BTCUSDT', D)]: '', [dailyMetricsPath('BTCUSDT', D + DAY)]: '',
+  }, { extraKeys: [`${dailyMetricsPath('BTCUSDT', D)}.CHECKSUM`] });
+  assert.equal(await earliestMetricsDay('BTCUSDT', { http }), '2026-01-10');
+  assert.equal(await earliestMetricsDay('NOPEUSDT', { http }), null);
+  assert.ok(requests.every(u => u.includes('max-keys=5')));
 });

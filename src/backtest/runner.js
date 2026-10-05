@@ -1,6 +1,6 @@
 import { fetchKlinesRange, fetchFundingRateHistory } from '../enrichment/binance.js';
 import { strategyById } from '../db/settings.js';
-import { buildCandidate, filterCandidate } from '../pipeline/candidateBuilder.js';
+import { buildCandidate, filterCandidate, OI_UNAVAILABLE } from '../pipeline/candidateBuilder.js';
 import { runIndicators } from '../signals/indicators.js';
 import { getKlinesCached, DEFAULT_CACHE_DIR } from './klineStore.js';
 import { planEntry } from '../pipeline/entryPlan.js';
@@ -298,8 +298,8 @@ export async function runBacktest(opts) {
         const candidate = await buildCandidate(rawSignal, strat, balance.availableBalance);
         candidate.filters = await filterCandidate(candidate, strat, { oiMissing });
         if (!candidate.filters.passed) {
-          if (oiSource && candidate.metrics.openInterestUsdt === null && oiMissing === 'reject') oiRejectedMissing++;
-          reject(rawSignal, 'pipeline', 'filter_failed');
+          if (candidate.filters.reasonCode === OI_UNAVAILABLE) oiRejectedMissing++;
+          reject(rawSignal, 'pipeline', candidate.filters.reasonCode);
           continue;
         }
         prepared.push(candidate);
