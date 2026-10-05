@@ -6,7 +6,7 @@ import {
   passesCriteria,
   selectTopMovers,
   mergeUniverse,
-  ticker24hFromKlines1h,
+  ticker24hFromKlines15m,
 } from '../src/universe/rules.js';
 
 test('universeCriteria: default criteria', () => {
@@ -247,71 +247,76 @@ test('mergeUniverse: prefer pinned over candidates when space limited', () => {
   assert.strictEqual(result.length, 2);
 });
 
-test('ticker24hFromKlines1h: calculate quoteVolume', () => {
-  const klines = Array.from({ length: 24 }, (_, i) => ({
-    openTime: i * 3600000,
+test('ticker24hFromKlines15m: calculate quoteVolume (96 candles = 24h)', () => {
+  const klines = Array.from({ length: 96 }, (_, i) => ({
+    openTime: i * 15 * 60 * 1000,
     open: 100,
     high: 110,
     low: 90,
-    close: 100 + i,
+    close: 100 + (i % 10), // some variation
     volume: 10,
-    quoteVolume: 1000 + i * 100,
-    closeTime: (i + 1) * 3600000 - 1,
+    quoteVolume: 1000 + i * 10,
+    closeTime: (i + 1) * 15 * 60 * 1000 - 1,
   }));
-  const result = ticker24hFromKlines1h(klines);
+  const result = ticker24hFromKlines15m(klines);
   const expected = klines.reduce((s, k) => s + k.quoteVolume, 0);
   assert.strictEqual(result.quoteVolume, expected);
 });
 
-test('ticker24hFromKlines1h: calculate priceChangePercent', () => {
-  const klines = Array.from({ length: 24 }, (_, i) => ({
-    openTime: i * 3600000,
-    open: 100,
+test('ticker24hFromKlines15m: calculate priceChangePercent (first open vs last close)', () => {
+  const klines = Array.from({ length: 96 }, (_, i) => ({
+    openTime: i * 15 * 60 * 1000,
+    open: i === 0 ? 100 : 100 + (i-1),
     high: 110,
     low: 90,
     close: 100 + i,
     volume: 10,
     quoteVolume: 1000,
-    closeTime: (i + 1) * 3600000 - 1,
+    closeTime: (i + 1) * 15 * 60 * 1000 - 1,
   }));
-  const result = ticker24hFromKlines1h(klines);
-  assert.strictEqual(result.priceChangePercent, 23);
+  const result = ticker24hFromKlines15m(klines);
+  // first.open = 100, last.close = 100 + 95 = 195
+  // change = (195-100)/100*100 = 95%
+  assert.strictEqual(result.priceChangePercent, 95);
 });
 
-test('ticker24hFromKlines1h: empty klines', () => {
-  const result = ticker24hFromKlines1h([]);
+test('ticker24hFromKlines15m: empty klines', () => {
+  const result = ticker24hFromKlines15m([]);
   assert.strictEqual(result.quoteVolume, 0);
   assert.strictEqual(result.priceChangePercent, 0);
 });
 
-test('ticker24hFromKlines1h: less than 24 candles', () => {
-  const klines = Array.from({ length: 5 }, (_, i) => ({
-    openTime: i * 3600000,
+test('ticker24hFromKlines15m: less than 96 candles (uses available)', () => {
+  const klines = Array.from({ length: 50 }, (_, i) => ({
+    openTime: i * 15 * 60 * 1000,
     open: 100,
     high: 110,
     low: 90,
     close: 100 + i,
     volume: 10,
     quoteVolume: 1000,
-    closeTime: (i + 1) * 3600000 - 1,
+    closeTime: (i + 1) * 15 * 60 * 1000 - 1,
   }));
-  const result = ticker24hFromKlines1h(klines);
-  assert.strictEqual(result.quoteVolume, 5000);
-  assert.strictEqual(result.priceChangePercent, 4);
+  const result = ticker24hFromKlines15m(klines);
+  // 50 * 1000 = 50000
+  assert.strictEqual(result.quoteVolume, 50000);
+  // first.open = 100, last.close = 100 + 49 = 149
+  // change = (149-100)/100*100 = 49%
+  assert.strictEqual(result.priceChangePercent, 49);
 });
 
-test('ticker24hFromKlines1h: zero open price', () => {
-  const klines = Array.from({ length: 24 }, (_, i) => ({
-    openTime: i * 3600000,
+test('ticker24hFromKlines15m: zero open price', () => {
+  const klines = Array.from({ length: 96 }, (_, i) => ({
+    openTime: i * 15 * 60 * 1000,
     open: i === 0 ? 0 : 100,
     high: 110,
     low: 90,
     close: 100,
     volume: 10,
     quoteVolume: 1000,
-    closeTime: (i + 1) * 3600000 - 1,
+    closeTime: (i + 1) * 15 * 60 * 1000 - 1,
   }));
-  const result = ticker24hFromKlines1h(klines);
+  const result = ticker24hFromKlines15m(klines);
   assert.strictEqual(result.priceChangePercent, 0);
 });
 

@@ -112,13 +112,13 @@ export function mergeUniverse(candidates, pinned = [], envDefaults = [], maxTota
 }
 
 /**
- * Calculate 24h stats from 1h klines (used by backtest when ticker data unavailable).
- * Returns { quoteVolume, priceChangePercent } approximation.
- * @param {object[]} klines1h - last 24 1h candles, sorted by openTime
- * @returns {object}
+ * Calculate 24h stats from 15m klines (used by backtest when ticker data unavailable).
+ * 96 15m candles = 24 hours. Returns approximation of 24h ticker snapshot.
+ * @param {object[]} klines15m - last 96+ 15m candles, sorted by openTime
+ * @returns {object} { quoteVolume, priceChangePercent }
  */
-export function ticker24hFromKlines1h(klines1h) {
-  const window = klines1h.slice(-24); // trailing 24 hours
+export function ticker24hFromKlines15m(klines15m) {
+  const window = klines15m.slice(-96); // trailing 24 hours (96 * 15min)
   if (window.length === 0) {
     return { quoteVolume: 0, priceChangePercent: 0 };
   }
