@@ -57,21 +57,23 @@ export function parseS3Listing(xml) {
 }
 
 /**
- * Every key and common prefix under `prefix` (all pages).
+ * Every key and common prefix under `prefix` (all pages), or only the first
+ * `maxKeys` after `marker`.
  * @param {string} prefix
- * @param {{ http?: Function, delimiter?: boolean, marker?: string }} [opts]
+ * @param {{ http?: Function, delimiter?: boolean, marker?: string, maxKeys?: number }} [opts]
  */
-export async function listS3(prefix, { http = defaultHttp, delimiter = true, marker = '' } = {}) {
+export async function listS3(prefix, { http = defaultHttp, delimiter = true, marker = '', maxKeys = null } = {}) {
   const keys = [], prefixes = [];
   let cursor = marker;
   for (;;) {
-    const qs = new URLSearchParams({ prefix, ...(delimiter ? { delimiter: '/' } : {}), ...(cursor ? { marker: cursor } : {}) });
+    const qs = new URLSearchParams({ prefix, ...(delimiter ? { delimiter: '/' } : {}), ...(cursor ? { marker: cursor } : {}),
+      ...(maxKeys ? { 'max-keys': String(maxKeys) } : {}) });
     const res = await http(`${VISION_LIST_URL}?${qs}`);
     if (res.status !== 200) throw new Error(`listing ${prefix} failed with HTTP ${res.status}`);
     const page = parseS3Listing(res.data.toString('utf8'));
     keys.push(...page.keys);
     prefixes.push(...page.prefixes);
-    if (!page.isTruncated) break;
+    if (!page.isTruncated || (maxKeys && keys.length + prefixes.length >= maxKeys)) break;
     const next = page.nextMarker || [...page.keys, ...page.prefixes].sort().at(-1);
     if (!next || next === cursor) break;
     cursor = next;

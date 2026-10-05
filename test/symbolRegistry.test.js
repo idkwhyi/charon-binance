@@ -96,3 +96,17 @@ test('fetchKlinesRangeVision: monthly file for whole months, daily files otherwi
 test('npm run universe:symbols is wired', () => {
   assert.equal(JSON.parse(readFileSync('package.json', 'utf8')).scripts['universe:symbols'], 'node universe_symbols.js');
 });
+
+test('registry range from monthly listing + two small daily listings (no full daily listing)', async () => {
+  const files = {};
+  for (const m of ['2024-01', '2024-02', '2024-03']) files[`data/futures/um/monthly/klines/OLDUSDT/1d/OLDUSDT-1d-${m}.zip`] = '';
+  for (let d = Date.UTC(2024, 0, 15); d <= Date.UTC(2024, 3, 10); d += DAY) files[k1d('OLDUSDT', d)] = '';
+  const { http, requests } = fakeVision(files, { pageSize: 1000 });
+  const reg = await buildSymbolRegistry({ http, file: join(mkdtempSync(join(tmpdir(), 'charon-reg-')), 's.json'), nowMs: Date.UTC(2024, 5, 1) });
+  const e = reg.get('OLDUSDT');
+  assert.deepEqual([day(e.firstDayMs), day(e.lastDayMs), e.delisted], ['2024-01-15', '2024-04-10', true]);
+  const daily = requests.filter(u => u.includes(encodeURIComponent('daily/klines/OLDUSDT/1d/')));
+  assert.equal(daily.length, 2);
+  assert.ok(daily.every(u => u.includes('marker=')), 'never a full listing of every daily file');
+  assert.ok(daily.some(u => u.includes('max-keys=2')));
+});

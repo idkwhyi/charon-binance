@@ -16,7 +16,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { DEFAULT_CACHE_DIR } from './klineStore.js';
-import { listS3, mapLimit, UM_DAILY_KLINES, DAY_MS, dayStart, isoDay, defaultHttp } from './vision.js';
+import { listS3, mapLimit, UM_DAILY_KLINES, UM_MONTHLY_KLINES, DAY_MS, dayStart, isoDay, defaultHttp } from './vision.js';
 
 export const DEFAULT_REGISTRY_FILE = path.join(path.dirname(DEFAULT_CACHE_DIR), 'universe', 'symbols.json');
 
@@ -24,6 +24,38 @@ export const DEFAULT_REGISTRY_FILE = path.join(path.dirname(DEFAULT_CACHE_DIR), 
 export const isPerpetualName = s => /^[A-Z0-9]+$/.test(s);
 
 const DAY_KEY = /-1d-(\d{4}-\d{2}-\d{2})\.zip$/;
+const MONTH_KEY = /-1d-(\d{4}-\d{2})\.zip$/;
+
+const dayOf = key => { const m = key.match(DAY_KEY); return m ? Date.parse(`${m[1]}T00:00:00Z`) : null; };
+
+/**
+ * First/last archived day of a symbol without listing every daily file: the
+ * monthly 1d listing (~2 keys per month) gives the months; then one tiny
+ * listing for the first daily file of the first month and one for the days of
+ * the last month onwards.
+ */
+async function archivedRange(symbol, http) {
+  const dailyPrefix = `${UM_DAILY_KLINES}${symbol}/1d/`;
+  const months = (await listS3(`${UM_MONTHLY_KLINES}${symbol}/1d/`, { http, delimiter: false })).keys
+    .map(k => k.match(MONTH_KEY)?.[1]).filter(Boolean).sort();
+  const dailyAfter = (marker, maxKeys) => listS3(dailyPrefix, { http, delimiter: false, marker, maxKeys })
+    .then(r => r.keys.filter(k => DAY_KEY.test(k)).sort());
+  if (!months.length) {
+    const keys = await dailyAfter('');
+    return { firstDayMs: keys.length ? dayOf(keys[0]) : null, lastDayMs: keys.length ? dayOf(keys.at(-1)) : null, lastKey: keys.at(-1) || '' };
+  }
+  const monthMarker = m => `${dailyPrefix}${symbol}-1d-${m}-00`;
+  const [firstKeys, lastKeys] = await Promise.all([dailyAfter(monthMarker(months[0]), 2), dailyAfter(monthMarker(months.at(-1)))]);
+  const monthStart = Date.parse(`${months[0]}-01T00:00:00Z`);
+  const firstDaily = firstKeys.length ? dayOf(firstKeys[0]) : null;
+  const lastMonthEnd = Date.UTC(Number(months.at(-1).slice(0, 4)), Number(months.at(-1).slice(5, 7)), 1) - DAY_MS;
+  return {
+    // daily files may start later than monthly ones: month precision is enough then
+    firstDayMs: firstDaily !== null && isoDay(firstDaily).startsWith(months[0]) ? firstDaily : monthStart,
+    lastDayMs: lastKeys.length ? dayOf(lastKeys.at(-1)) : lastMonthEnd,
+    lastKey: lastKeys.at(-1) || '',
+  };
+}
 
 async function readJson(file) {
   try { return JSON.parse(await fs.readFile(file, 'utf8')); } catch { return null; }
@@ -58,15 +90,13 @@ export async function buildSymbolRegistry({ exchangeInfoSymbols = [], http = def
     let { firstDayMs = null, lastDayMs = null, lastKey = '' } = prev || {};
     const final = prev?.delisted && prev.lastDayMs !== null && prev.lastDayMs < nowMs - 7 * DAY_MS;
     if (!final && archived.has(symbol)) {
-      const { keys } = await listS3(`${UM_DAILY_KLINES}${symbol}/1d/`, { http, delimiter: false, marker: lastKey });
-      for (const key of keys) {
-        const m = key.match(DAY_KEY);
-        if (!m) continue;
-        const d = Date.parse(`${m[1]}T00:00:00Z`);
-        if (firstDayMs === null || d < firstDayMs) firstDayMs = d;
-        if (lastDayMs === null || d > lastDayMs) lastDayMs = d;
+      if (lastKey) {
+        // Known symbol: only the daily files added since the last listing
+        const keys = (await listS3(`${UM_DAILY_KLINES}${symbol}/1d/`, { http, delimiter: false, marker: lastKey })).keys.filter(k => DAY_KEY.test(k)).sort();
+        if (keys.length) { lastDayMs = Math.max(lastDayMs ?? 0, dayOf(keys.at(-1))); lastKey = keys.at(-1); }
+      } else {
+        ({ firstDayMs, lastDayMs, lastKey } = await archivedRange(symbol, http));
       }
-      if (keys.length) lastKey = keys.sort().at(-1);
     }
     const ex = info.get(symbol);
     const listed = ex?.status === 'TRADING';

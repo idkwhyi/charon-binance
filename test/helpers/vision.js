@@ -43,8 +43,9 @@ export function fakeVision(files = {}, { pageSize = 1000, extraKeys = [] } = {})
           if (p > marker && !entries.some(e => e.prefix === p)) entries.push({ prefix: p });
         } else entries.push({ key: k });
       }
-      const page = entries.slice(0, pageSize);
-      const truncated = entries.length > pageSize;
+      const size = Math.min(pageSize, Number(q.get('max-keys')) || Infinity);
+      const page = entries.slice(0, size);
+      const truncated = entries.length > size;
       const last = page.at(-1);
       const xml = `<?xml version="1.0"?><ListBucketResult><Prefix>${xmlEscape(prefix)}</Prefix><IsTruncated>${truncated}</IsTruncated>` +
         (truncated && delimiter ? `<NextMarker>${xmlEscape(last.key || last.prefix)}</NextMarker>` : '') +
