@@ -21,6 +21,10 @@ import { shouldUseLlm } from './src/pipeline/candidateSelector.js';
 import { utcDayStartMs, dailyLossStatus } from './src/pipeline/riskControls.js';
 import { buildSettingsReport, formatSettingsReport, missingSchema, EXPECTED_SCHEMA } from './src/tools/settingsReport.js';
 import { isEntryPoint } from './src/entry.js';
+import fs from 'node:fs';
+import path from 'node:path';
+import dotenv from 'dotenv';
+import { envVarsReadByCode, unusedEnvVars } from './src/tools/envUsage.js';
 
 async function main() {
   const pool = new pg.Pool({
@@ -83,10 +87,17 @@ async function main() {
   const legacyLiqRows = await tryRead('legacy exit reasons', async () =>
     (await pool.query("SELECT COUNT(*)::int AS n FROM positions WHERE exit_reason = 'LIQUIDATION_GUARD'")).rows[0].n, 0);
 
+  // .env keys nothing reads any more (e.g. retired TOP_GAINER_* knobs)
+  const unusedEnv = await tryRead('.env usage', async () => {
+    const envFile = path.resolve('.env');
+    if (!fs.existsSync(envFile)) return [];
+    return unusedEnvVars(Object.keys(dotenv.parse(fs.readFileSync(envFile))), envVarsReadByCode(path.dirname(envFile)));
+  }, []);
+
   const report = buildSettingsReport({
     config, env: process.env, strat, strategyRow, activeStrategyRaw, settings,
     llmDecides: shouldUseLlm(config.LLM_DECISION_ENABLED, strat),
-    extra: { watchlist, openPositions, virtualBalance, daily, missingSchema: schemaMissing, legacyLiqRows, errors },
+    extra: { watchlist, openPositions, virtualBalance, daily, missingSchema: schemaMissing, legacyLiqRows, unusedEnv, errors },
   });
   console.log(formatSettingsReport(report));
   await pool.end();

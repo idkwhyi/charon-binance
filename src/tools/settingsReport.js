@@ -139,6 +139,10 @@ export function buildSettingsReport({ config, env, strat, strategyRow, activeStr
   } catch (err) {
     warnings.push(`${err.message} — the bot and backtest will refuse to start.`);
   }
+  if (extra.unusedEnv?.length) {
+    const list = extra.unusedEnv.map(v => (v.hint ? `${v.name} (${v.hint})` : v.name)).join(', ');
+    warnings.push(`.env sets variable(s) the code no longer reads — ignored, remove them: ${list}`);
+  }
   for (const e of extra.errors || []) warnings.push(`Could not read ${e}`);
 
   return { sections, warnings };

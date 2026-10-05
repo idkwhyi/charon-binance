@@ -75,3 +75,28 @@ test('the script opens a read-only DB session', () => {
   assert.match(src, /default_transaction_read_only=on/);
   assert.ok(!/\b(INSERT|UPDATE|DELETE|ALTER|DROP)\b/i.test(src.replace(/\/\*[\s\S]*?\*\//g, '')), 'no write SQL in the script');
 });
+
+test('.env variables the code no longer reads are flagged (retired TOP_GAINER_* with a hint)', async () => {
+  const { envVarsInSource, envVarsReadByCode, unusedEnvVars } = await import('../src/tools/envUsage.js');
+  assert.deepEqual(envVarsInSource("a = process.env.FOO_1 || process.env['BAR'];"), ['FOO_1', 'BAR']);
+
+  const read = envVarsReadByCode(process.cwd());
+  for (const v of ['TOP_GAINER_ENABLED', 'UNIVERSE_EXCLUDE_SYMBOLS', 'PG_HOST', 'BACKTEST_CACHE_DIR']) assert.ok(read.has(v), v);
+  for (const v of ['TOP_GAINER_COUNT', 'TOP_GAINER_MIN_VOLUME_USDT', 'TOP_GAINER_REFRESH_MS']) assert.ok(!read.has(v), v);
+
+  const unused = unusedEnvVars(['PG_HOST', 'TOP_GAINER_COUNT', 'TOP_GAINER_REFRESH_MS', 'MY_TYPO_VAR', 'NODE_ENV'], read);
+  assert.deepEqual(unused.map(u => u.name), ['MY_TYPO_VAR', 'TOP_GAINER_COUNT', 'TOP_GAINER_REFRESH_MS']);
+  assert.match(unused[1].hint, /src\/universe\/rules\.js/);
+
+  const r = build({ extra: { unusedEnv: unused } });
+  assert.equal(r.warnings.length, 1);
+  assert.match(r.warnings[0], /\.env sets variable\(s\) the code no longer reads.*MY_TYPO_VAR.*TOP_GAINER_COUNT \(universe rules/);
+  assert.deepEqual(build().warnings, [], 'nothing unused: no warning');
+});
+
+test('every variable in .env.example is read by the code (none stale)', async () => {
+  const { readFileSync } = await import('node:fs');
+  const dotenv = (await import('dotenv')).default;
+  const { envVarsReadByCode, unusedEnvVars } = await import('../src/tools/envUsage.js');
+  assert.deepEqual(unusedEnvVars(Object.keys(dotenv.parse(readFileSync('.env.example'))), envVarsReadByCode(process.cwd())), []);
+});
