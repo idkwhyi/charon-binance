@@ -5,7 +5,8 @@ import { runBacktest } from './src/backtest/runner.js';
 import { buildBacktestReport, printBacktestReport } from './src/backtest/report.js';
 import { prepareDynamicUniverse } from './src/backtest/dynamicUniverse.js';
 import { fetchExchangeInfoAll } from './src/enrichment/binance.js';
-import { WATCHLIST } from './src/config.js';
+import { WATCHLIST, UNIVERSE_EXCLUDE_SYMBOLS } from './src/config.js';
+import { universeRules } from './src/universe/rules.js';
 import { isEntryPoint } from './src/entry.js';
 
 /**
@@ -25,9 +26,10 @@ import { isEntryPoint } from './src/entry.js';
  *   (src/universe/rules.js) over every USDⓈ-M perpetual incl. delisted ones;
  *   core symbols (--symbols, else env WATCHLIST) are always in.
  *   15m candles are cached for all symbols; 1h/15m/1m only while in the universe.
- * --unknown-underlying: symbols missing from today's exchangeInfo (long
- *   delisted) have no underlyingType: reject them (default, strict COIN
- *   allowlist) or treat them as COIN.
+ * --unknown-underlying: symbols missing from today's exchangeInfo (e.g.
+ *   delisted) have no underlyingType: treat them as COIN (default) or reject
+ *   them. Known non-crypto ones go in UNIVERSE_EXCLUDE_SYMBOLS (.env), which
+ *   applies to live and backtest alike.
  * --oi-missing: what the strategy's min_open_interest_usdt filter does when the
  *   data.binance.vision metrics archive has no OI for that symbol/time —
  *   reject the candidate (default) or ignore the filter.
@@ -61,7 +63,7 @@ async function main() {
     runId = Number(args.report);
   } else {
     const mode = args.universe || 'fixed';
-    const unknownUnderlying = args['unknown-underlying'] || 'reject';
+    const unknownUnderlying = args['unknown-underlying'] || 'coin';
     if (!['fixed', 'dynamic'].includes(mode) || !['reject', 'coin'].includes(unknownUnderlying) || !args.strategy || !args.from || !args.to || (mode === 'fixed' && !args.symbols)) {
       console.error(USAGE);
       process.exit(1);
@@ -83,6 +85,7 @@ async function main() {
         core: symbols || WATCHLIST,
         exchangeInfoSymbols: await fetchExchangeInfoAll(),
         unknownUnderlying,
+        rules: universeRules({ excludeSymbols: UNIVERSE_EXCLUDE_SYMBOLS }),
       });
       dynamic = { universe: timeline, fetchRangeFor };
     }

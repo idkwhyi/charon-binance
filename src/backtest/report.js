@@ -118,6 +118,8 @@ export function summarizeUniverse(params, closed, ctx) {
     avgSize: u?.stats?.avgSize ?? null,
     maxSize: u?.stats?.maxSize ?? null,
     excludedUnknownType: u?.excludedUnknownType || [],
+    assumedCoin: u?.assumedCoin || [],
+    excludeSymbols: u?.excludeSymbols || [],
     oi: oi && {
       ...oi,
       coveragePercent: oi.lookups > 0 ? oi.found / oi.lookups * 100 : null,
@@ -213,8 +215,12 @@ function universeLines(u, line) {
       `Size:              avg ${u.avgSize?.toFixed(1) ?? 'n/a'}, max ${u.maxSize ?? 'n/a'}`,
       `Delisted entered:  ${u.delisted.length}${u.delisted.length ? ` (${u.delisted.join(', ')})` : ''}`,
     );
+    if (u.excludeSymbols.length) out.push(`Excluded (manual): ${u.excludeSymbols.join(', ')} (UNIVERSE_EXCLUDE_SYMBOLS)`);
+    if (u.assumedCoin.length) {
+      out.push(`Assumed COIN:      ${u.assumedCoin.length} member(s) not in today's exchangeInfo, taken as COIN — check for non-crypto: ${u.assumedCoin.join(', ')}`);
+    }
     if (u.excludedUnknownType.length) {
-      out.push(`Unknown type out:  ${u.excludedUnknownType.length} symbol(s) would have qualified but have no underlyingType (--unknown-underlying coin to include): ${u.excludedUnknownType.join(', ')}`);
+      out.push(`Unknown type out:  ${u.excludedUnknownType.length} symbol(s) would have qualified but have no underlyingType (--unknown-underlying reject): ${u.excludedUnknownType.join(', ')}`);
     }
     out.push('', '  Symbol               Total time   Stints');
     for (const m of u.members) {

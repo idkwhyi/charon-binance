@@ -4,7 +4,7 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { computeUniverseTimeline, UniverseTimeline } from '../src/backtest/universeTimeline.js';
-import { UNIVERSE_RULES, ticker24hFromKlines15m } from '../src/universe/rules.js';
+import { UNIVERSE_RULES, ticker24hFromKlines15m, universeRules } from '../src/universe/rules.js';
 import { runBacktest } from '../src/backtest/runner.js';
 import * as runner from '../src/backtest/runner.js';
 import { installFakePool } from './helpers/fakePool.js';
@@ -88,14 +88,27 @@ test('top N by |change|: a symbol leaves when pushed out of the top N, core symb
   assert.equal(tl.totalMs('BUSDT'), T0 + 13 * M15 - (T0 + 9 * M15));
 });
 
-test('unknown underlyingType (not in exchangeInfo): rejected by default and reported, or treated as COIN', async () => {
+test('unknown underlyingType (not in exchangeInfo): COIN by default and reported, or rejected', async () => {
   const map = { GONEUSDT: series(o => (o >= T0 ? 110 : 100)), EQUSDT: series(o => (o >= T0 ? 110 : 100)) };
   const candidates = [cand('GONEUSDT', null), cand('EQUSDT', 'EQUITY')];
-  const strict = await computeUniverseTimeline({ candidates, dateFromMs: T0, dateToMs: T0 + 4 * M15, load15m: loaderFor(map).load15m });
+  const loose = await computeUniverseTimeline({ candidates, dateFromMs: T0, dateToMs: T0 + 4 * M15, load15m: loaderFor(map).load15m });
+  assert.deepEqual([...loose.intervals.keys()], ['GONEUSDT'], 'EQUITY stays out either way');
+  assert.deepEqual(loose.toJSON().assumedCoin, ['GONEUSDT']);
+  const strict = await computeUniverseTimeline({ candidates, dateFromMs: T0, dateToMs: T0 + 4 * M15, load15m: loaderFor(map).load15m, unknownUnderlying: 'reject' });
   assert.equal(strict.intervals.size, 0);
   assert.deepEqual(strict.excludedUnknownType, ['GONEUSDT']);
-  const loose = await computeUniverseTimeline({ candidates, dateFromMs: T0, dateToMs: T0 + 4 * M15, load15m: loaderFor(map).load15m, unknownUnderlying: 'coin' });
-  assert.deepEqual([...loose.intervals.keys()], ['GONEUSDT'], 'EQUITY stays out either way');
+});
+
+test('UNIVERSE_EXCLUDE_SYMBOLS in the backtest: never loaded, never a member; core unaffected', async () => {
+  const up = series(o => (o >= T0 ? 110 : 100));
+  const { load15m, calls } = loaderFor({ GONEUSDT: up, XAUUSDT: up, COREUSDT: up });
+  const tl = await computeUniverseTimeline({
+    candidates: [cand('GONEUSDT', null), cand('XAUUSDT', null), cand('COREUSDT')], dateFromMs: T0, dateToMs: T0 + 4 * M15, load15m,
+    core: ['COREUSDT'], rules: universeRules({ excludeSymbols: ['XAUUSDT', 'COREUSDT'] }),
+  });
+  assert.deepEqual([...tl.intervals.keys()].sort(), ['COREUSDT', 'GONEUSDT']);
+  assert.ok(!calls.some(c => c[0] === 'XAUUSDT'));
+  assert.deepEqual(tl.toJSON().excludeSymbols, ['COREUSDT', 'XAUUSDT']);
 });
 
 test('only symbols trading around the chunk are loaded; stablecoins and non-USDT never', async () => {

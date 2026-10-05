@@ -79,6 +79,10 @@ export const WATCHLIST = (process.env.WATCHLIST || 'BTCUSDT,ETHUSDT,BNBUSDT,SOLU
 // rules (top N, min volume, min |change|, COIN only) are UNIVERSE_RULES in
 // src/universe/rules.js, shared with the backtest.
 export const TOP_GAINER_ENABLED = process.env.TOP_GAINER_ENABLED !== 'false';
+// Symbols never added to the universe as movers, live and backtest (comma-separated).
+// Pinned and WATCHLIST symbols are not affected.
+export const UNIVERSE_EXCLUDE_SYMBOLS = (process.env.UNIVERSE_EXCLUDE_SYMBOLS || '')
+  .split(',').map(s => s.trim().toUpperCase()).filter(Boolean);
 
 export const JSON_HEADERS = {
   Accept: 'application/json',

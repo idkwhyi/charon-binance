@@ -12,9 +12,9 @@
 
 import { fetchTicker24h, fetchExchangeInfoAll } from './binance.js';
 import { saveWatchlist, getWatchlist, getPinnedSymbols, invalidateWatchlistCache } from '../db/watchlist.js';
-import { TOP_GAINER_ENABLED, WATCHLIST } from '../config.js';
+import { TOP_GAINER_ENABLED, WATCHLIST, UNIVERSE_EXCLUDE_SYMBOLS } from '../config.js';
 import { sendTelegram } from '../telegram/send.js';
-import { selectUniverse, diffUniverse, exchangeInfoMap } from '../universe/rules.js';
+import { selectUniverse, diffUniverse, exchangeInfoMap, universeRules } from '../universe/rules.js';
 
 let last15mCloseTimeMs = 0;
 
@@ -68,6 +68,7 @@ export async function updateUniverse(force = false) {
       exchangeInfo: exchangeInfoMap(infoSymbols),
       pinned: await getPinnedSymbols(),
       envDefaults: WATCHLIST,
+      rules: universeRules({ excludeSymbols: UNIVERSE_EXCLUDE_SYMBOLS }),
     });
     const after = await saveWatchlist(symbols);
     invalidateWatchlistCache();

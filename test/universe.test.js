@@ -11,6 +11,7 @@ import {
   selectUniverse,
   diffUniverse,
   UNIVERSE_RULES,
+  universeRules,
 } from '../src/universe/rules.js';
 
 const COIN = { underlyingType: 'COIN' };
@@ -210,7 +211,7 @@ test('mergeUniverse: no overall cap — pinned/env never squeeze out a top mover
 const tk = (symbol, pct, vol = 100_000_000) => ({ symbol, quoteVolume: vol, priceChangePercent: pct });
 
 test('UNIVERSE_RULES: top 50, 24h volume >= 50M, |change| >= 2%, COIN only', () => {
-  assert.deepStrictEqual({ ...UNIVERSE_RULES }, { topN: 50, minVolume24hUsdt: 50_000_000, minAbsChangePercent: 2, coinOnly: true });
+  assert.deepStrictEqual({ ...UNIVERSE_RULES }, { topN: 50, minVolume24hUsdt: 50_000_000, minAbsChangePercent: 2, coinOnly: true, excludeSymbols: [] });
   const c = universeCriteria();
   assert.strictEqual(c.minVolume24hUsdt, UNIVERSE_RULES.minVolume24hUsdt);
   assert.strictEqual(c.minAbsChangePercent, UNIVERSE_RULES.minAbsChangePercent);
@@ -391,4 +392,15 @@ test('coin allowlist: selectTopMovers without an exchange info map selects nothi
   const tickers = [{ symbol: 'BTCUSDT', quoteVolume: 100_000_000, priceChangePercent: 5 }];
   assert.deepStrictEqual(selectTopMovers(tickers, universeCriteria()), []);
   assert.deepStrictEqual(selectTopMovers(tickers, universeCriteria(), coinMap(tickers)), ['BTCUSDT']);
+});
+
+test('UNIVERSE_EXCLUDE_SYMBOLS: excluded symbols never enter as movers; pinned/env stay', () => {
+  const rules = universeRules({ excludeSymbols: [' xauusdt', 'AUSDT'] });
+  assert.deepStrictEqual([...rules.excludeSymbols], ['XAUUSDT', 'AUSDT']);
+  const tickers = [tk('XAUUSDT', 20), tk('AUSDT', 9), tk('BUSDT', 5)];
+  const info = exchangeInfoMap(tickers.map(t => ({ symbol: t.symbol, underlyingType: 'COIN' })));
+  const { movers, symbols } = selectUniverse(tickers, { exchangeInfo: info, envDefaults: ['AUSDT'], rules });
+  assert.deepStrictEqual(movers, ['BUSDT']);
+  assert.deepStrictEqual(symbols, ['AUSDT', 'BUSDT'], 'AUSDT kept as an env symbol');
+  assert.deepStrictEqual(selectUniverse(tickers, { exchangeInfo: info }).movers, ['XAUUSDT', 'AUSDT', 'BUSDT'], 'default: no exclusions');
 });

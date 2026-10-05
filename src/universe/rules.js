@@ -23,7 +23,17 @@ export const UNIVERSE_RULES = Object.freeze({
   minVolume24hUsdt: 50_000_000,
   minAbsChangePercent: 2,
   coinOnly: true,
+  excludeSymbols: Object.freeze([]), // manual exclusions (UNIVERSE_EXCLUDE_SYMBOLS)
 });
+
+/**
+ * UNIVERSE_RULES plus the manual exclusion list. Live and backtest both call
+ * this with config.UNIVERSE_EXCLUDE_SYMBOLS. Excluded symbols never enter as
+ * movers; pinned and env WATCHLIST symbols are explicit choices and stay.
+ */
+export function universeRules({ excludeSymbols = [] } = {}) {
+  return Object.freeze({ ...UNIVERSE_RULES, excludeSymbols: Object.freeze([...new Set(excludeSymbols.map(s => String(s).trim().toUpperCase()).filter(Boolean))]) });
+}
 
 /**
  * Stablecoin pairs: never included in dynamic universe.
@@ -47,12 +57,14 @@ export function universeCriteria({
   minAbsChangePercent = UNIVERSE_RULES.minAbsChangePercent,
   minOpenInterestUsdt = 0,
   coinOnly = UNIVERSE_RULES.coinOnly,
+  excludeSymbols = UNIVERSE_RULES.excludeSymbols,
 } = {}) {
   return {
     minVolume24hUsdt,
     minAbsChangePercent,
     minOpenInterestUsdt,
     coinOnly,
+    excludeSymbols: new Set(excludeSymbols),
   };
 }
 
@@ -96,6 +108,7 @@ export function passesCriteria(ticker, criteria, exchangeInfo = null) {
 
   return (
     isEligibleSymbolName(sym) &&
+    !criteria.excludeSymbols?.has(sym) &&
     vol >= criteria.minVolume24hUsdt &&
     pct >= criteria.minAbsChangePercent &&
     (criteria.minOpenInterestUsdt <= 0 || oi >= criteria.minOpenInterestUsdt) &&

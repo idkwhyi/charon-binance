@@ -89,6 +89,7 @@ export function buildSettingsReport({ config, env, strat, strategyRow, activeStr
         s('min_open_interest_usdt', 'min_open_interest_usdt', v => v ?? 'none'),
         ['Watchlist', extra.watchlist ? `${extra.watchlist.length}: ${extra.watchlist.join(', ')}` : 'unavailable', 'db/env'],
         ['TOP_GAINER_ENABLED', yesNo(config.TOP_GAINER_ENABLED), fromEnv('TOP_GAINER_ENABLED')],
+        ['UNIVERSE_EXCLUDE_SYMBOLS', config.UNIVERSE_EXCLUDE_SYMBOLS?.length ? config.UNIVERSE_EXCLUDE_SYMBOLS.join(', ') : 'none', fromEnv('UNIVERSE_EXCLUDE_SYMBOLS')],
         ['KLINE_STRICT_CONTINUITY_CANDLES_15M', config.KLINE_STRICT_CONTINUITY_CANDLES_15M, fromEnv('KLINE_STRICT_CONTINUITY_CANDLES_15M')],
         ['KLINE_STRICT_CONTINUITY_CANDLES_1H', config.KLINE_STRICT_CONTINUITY_CANDLES_1H, fromEnv('KLINE_STRICT_CONTINUITY_CANDLES_1H')],
       ],

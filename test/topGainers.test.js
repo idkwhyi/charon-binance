@@ -51,3 +51,4 @@ test('updateUniverse(true): COIN-only movers, saves merged watchlist, reports ad
     axios.get = original; console.log = log; invalidateWatchlistCache();
   }
 });
+

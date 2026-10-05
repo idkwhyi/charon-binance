@@ -24,21 +24,22 @@ const DAY_MS = 24 * 60 * 60_000;
  * @param {(symbol: string, fromMs: number, toMs: number) => Promise<object[]>} opts.load15m - 15m candles with openTime in [fromMs, toMs]
  * @param {string[]} [opts.core] - pinned + env symbols: always in
  * @param {object} [opts.rules]
- * @param {'reject'|'coin'} [opts.unknownUnderlying] - symbols with no exchangeInfo (e.g. long delisted):
- *   'reject' (default, strict COIN allowlist) or treat as COIN
+ * @param {'reject'|'coin'} [opts.unknownUnderlying] - symbols with no exchangeInfo today (e.g. delisted):
+ *   treat as COIN (default; use UNIVERSE_EXCLUDE_SYMBOLS for known non-crypto ones) or 'reject'
  * @param {number} [opts.chunkMs]
  * @returns {Promise<UniverseTimeline>}
  */
 export async function computeUniverseTimeline({
   candidates, dateFromMs, dateToMs, load15m, core = [], rules = UNIVERSE_RULES,
-  unknownUnderlying = 'reject', chunkMs = 7 * DAY_MS, tickMs = M15, log = () => {},
+  unknownUnderlying = 'coin', chunkMs = 7 * DAY_MS, tickMs = M15, log = () => {},
 }) {
   const info = new Map(candidates.map(c => [c.symbol, {
     underlyingType: c.underlyingType ?? (unknownUnderlying === 'coin' ? 'COIN' : null),
   }]));
   const criteria = universeCriteria(rules);
   const anyType = { ...criteria, coinOnly: false };
-  const pool = candidates.filter(c => isEligibleSymbolName(c.symbol));
+  const pool = candidates.filter(c => isEligibleSymbolName(c.symbol) && !criteria.excludeSymbols.has(c.symbol));
+  const unknownType = new Set(candidates.filter(c => c.underlyingType == null).map(c => c.symbol));
   const excludedUnknownType = new Set();
 
   const events = [];
@@ -88,13 +89,16 @@ export async function computeUniverseTimeline({
     log(`[universe] ${new Date(c0).toISOString().slice(0, 10)}: ${prev.length} symbols, ${intervals.size} seen so far`);
   }
 
-  return new UniverseTimeline({ mode: 'dynamic', intervals, events, core, excludedUnknownType: [...excludedUnknownType].sort(),
+  const assumedCoin = unknownUnderlying === 'coin' ? [...intervals.keys()].filter(s => unknownType.has(s)).sort() : [];
+  return new UniverseTimeline({ mode: 'dynamic', intervals, events, core, assumedCoin, excludeSymbols: [...criteria.excludeSymbols].sort(), excludedUnknownType: [...excludedUnknownType].sort(),
     stats: { ticks, avgSize: ticks ? sizeSum / ticks : 0, maxSize }, dateFromMs, dateToMs, tickMs });
 }
 
 export class UniverseTimeline {
-  constructor({ mode = 'dynamic', intervals, events = [], core = [], excludedUnknownType = [], stats = {}, dateFromMs, dateToMs, tickMs = M15 }) {
+  constructor({ mode = 'dynamic', intervals, events = [], assumedCoin = [], excludeSymbols = [], core = [], excludedUnknownType = [], stats = {}, dateFromMs, dateToMs, tickMs = M15 }) {
     this.mode = mode;
+    this.assumedCoin = assumedCoin;       // members with no exchangeInfo, taken as COIN
+    this.excludeSymbols = excludeSymbols; // UNIVERSE_EXCLUDE_SYMBOLS in effect
     this.intervals = intervals; // Map symbol => [[enterMs, exitMs|null], ...] sorted
     this.events = events;
     this.core = [...core];
@@ -147,6 +151,8 @@ export class UniverseTimeline {
       core: this.core,
       stats: this.stats,
       excludedUnknownType: this.excludedUnknownType,
+      assumedCoin: this.assumedCoin,
+      excludeSymbols: this.excludeSymbols,
       delisted: this.delisted || [],
       members: this.symbols().map(s => ({ symbol: s, totalMs: this.totalMs(s), intervals: this.closedIntervals(s) })),
       events: this.events.map(e => [e.t, e.symbol, e.type === 'enter' ? '+' : '-']),

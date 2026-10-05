@@ -9,7 +9,7 @@
  */
 
 import { fetchKlinesRange } from '../enrichment/binance.js';
-import { isEligibleSymbolName } from '../universe/rules.js';
+import { isEligibleSymbolName, UNIVERSE_RULES } from '../universe/rules.js';
 import { getKlinesCached, contiguousRuns, DEFAULT_CACHE_DIR } from './klineStore.js';
 import { buildSymbolRegistry, tradedBetween, DEFAULT_REGISTRY_FILE } from './symbolRegistry.js';
 import { computeUniverseTimeline } from './universeTimeline.js';
@@ -60,7 +60,7 @@ export function hybridFetchRange(entry, { http = defaultHttp, restFetchRange = f
  * @returns {Promise<{ timeline, registry, fetchRangeFor: (symbol) => Function, download: object }>}
  */
 export async function prepareDynamicUniverse({
-  dateFromMs, dateToMs, core = [], exchangeInfoSymbols = [], unknownUnderlying = 'reject',
+  dateFromMs, dateToMs, core = [], exchangeInfoSymbols = [], unknownUnderlying = 'coin', rules = UNIVERSE_RULES,
   cacheDir = DEFAULT_CACHE_DIR, registryFile = DEFAULT_REGISTRY_FILE, http = defaultHttp,
   restFetchRange = fetchKlinesRange, nowMs = Date.now(), concurrency = 4, log = console.log,
 }) {
@@ -72,7 +72,8 @@ export async function prepareDynamicUniverse({
   };
 
   const fromMs = dateFromMs - DAY_MS; // 24h stats at the first tick
-  const candidates = [...registry.values()].filter(e => isEligibleSymbolName(e.symbol) && tradedBetween(e, fromMs, dateToMs));
+  const excluded = new Set(rules.excludeSymbols || []);
+  const candidates = [...registry.values()].filter(e => isEligibleSymbolName(e.symbol) && !excluded.has(e.symbol) && tradedBetween(e, fromMs, dateToMs));
   const delisted = candidates.filter(e => e.delisted).length;
   log(`[universe] ${candidates.length} USDT perpetual(s) traded in the range (${delisted} since delisted); caching their 15m candles...`);
 
@@ -87,7 +88,7 @@ export async function prepareDynamicUniverse({
   });
 
   const timeline = await computeUniverseTimeline({
-    candidates, dateFromMs, dateToMs, core, unknownUnderlying, log,
+    candidates, dateFromMs, dateToMs, core, unknownUnderlying, rules, log,
     load15m: (symbol, a, b) => getKlinesCached(symbol, '15m', a, b, { dir: cacheDir, fetchRange: fetchRangeFor(symbol), nowMs }).then(r => r.candles),
   });
   timeline.delisted = timeline.symbols().filter(s => registry.get(s)?.delisted);
