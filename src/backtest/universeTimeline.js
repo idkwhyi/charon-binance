@@ -147,6 +147,7 @@ export class UniverseTimeline {
       core: this.core,
       stats: this.stats,
       excludedUnknownType: this.excludedUnknownType,
+      delisted: this.delisted || [],
       members: this.symbols().map(s => ({ symbol: s, totalMs: this.totalMs(s), intervals: this.closedIntervals(s) })),
       events: this.events.map(e => [e.t, e.symbol, e.type === 'enter' ? '+' : '-']),
     };

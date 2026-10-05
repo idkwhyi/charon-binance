@@ -3,6 +3,9 @@ import 'dotenv/config';
 import { initPgDb, closePgDb } from './src/db/pg-connection.js';
 import { runBacktest } from './src/backtest/runner.js';
 import { buildBacktestReport, printBacktestReport } from './src/backtest/report.js';
+import { prepareDynamicUniverse } from './src/backtest/dynamicUniverse.js';
+import { fetchExchangeInfoAll } from './src/enrichment/binance.js';
+import { WATCHLIST } from './src/config.js';
 
 /**
  * CLI runner + reporter for the historical backtest engine.
@@ -12,6 +15,18 @@ import { buildBacktestReport, printBacktestReport } from './src/backtest/report.
  *     --from 2026-01-01 --to 2026-06-01 [--balance 1000] [--label "my run"]
  *     [--oi-missing reject|ignore]
  *
+ * Dynamic (point-in-time) universe instead of a fixed symbol list:
+ *   node run_backtest.js --universe dynamic --strategy scalp --from ... --to ... \
+ *     [--symbols CORE1,CORE2] [--unknown-underlying reject|coin]
+ *
+ * --universe fixed (default): trade exactly --symbols.
+ * --universe dynamic: at every 15m close, the live universe rules
+ *   (src/universe/rules.js) over every USDⓈ-M perpetual incl. delisted ones;
+ *   core symbols (--symbols, else env WATCHLIST) are always in.
+ *   15m candles are cached for all symbols; 1h/15m/1m only while in the universe.
+ * --unknown-underlying: symbols missing from today's exchangeInfo (long
+ *   delisted) have no underlyingType: reject them (default, strict COIN
+ *   allowlist) or treat them as COIN.
  * --oi-missing: what the strategy's min_open_interest_usdt filter does when the
  *   data.binance.vision metrics archive has no OI for that symbol/time —
  *   reject the candidate (default) or ignore the filter.
@@ -32,6 +47,7 @@ function parseArgs(argv) {
 }
 
 const USAGE = 'Usage:\n' +
+  '  node run_backtest.js --universe dynamic --strategy scalp --from 2026-01-01 --to 2026-02-01 [--symbols CORE1,CORE2] [--unknown-underlying reject|coin] [--oi-missing reject|ignore]\n' +
   '  node run_backtest.js --symbols BTCUSDT,ETHUSDT --strategy scalp --from 2026-01-01 --to 2026-06-01 [--balance 1000] [--label "my run"] [--oi-missing reject|ignore]\n' +
   '  node run_backtest.js --report <runId>';
 
@@ -43,12 +59,14 @@ async function main() {
   if (args.report) {
     runId = Number(args.report);
   } else {
-    if (!args.symbols || !args.strategy || !args.from || !args.to) {
+    const mode = args.universe || 'fixed';
+    const unknownUnderlying = args['unknown-underlying'] || 'reject';
+    if (!['fixed', 'dynamic'].includes(mode) || !['reject', 'coin'].includes(unknownUnderlying) || !args.strategy || !args.from || !args.to || (mode === 'fixed' && !args.symbols)) {
       console.error(USAGE);
       process.exit(1);
     }
 
-    const symbols = args.symbols.split(',').map(s => s.trim().toUpperCase());
+    const symbols = args.symbols ? args.symbols.split(',').map(s => s.trim().toUpperCase()).filter(Boolean) : null;
     const dateFromMs = new Date(args.from).getTime();
     const dateToMs = new Date(args.to).getTime();
 
@@ -57,14 +75,26 @@ async function main() {
       process.exit(1);
     }
 
+    let dynamic = {};
+    if (mode === 'dynamic') {
+      const { timeline, fetchRangeFor } = await prepareDynamicUniverse({
+        dateFromMs, dateToMs,
+        core: symbols || WATCHLIST,
+        exchangeInfoSymbols: await fetchExchangeInfoAll(),
+        unknownUnderlying,
+      });
+      dynamic = { universe: timeline, fetchRangeFor };
+    }
+
     runId = await runBacktest({
-      label: args.label || `${args.strategy}_${args.from}_${args.to}`,
+      label: args.label || `${args.strategy}${mode === 'dynamic' ? '_dynamic' : ''}_${args.from}_${args.to}`,
       strategyId: args.strategy,
       symbols,
       dateFromMs,
       dateToMs,
       startingBalance: Number(args.balance || 1000),
       oiMissing: args['oi-missing'] || 'reject',
+      ...dynamic,
     });
   }
 

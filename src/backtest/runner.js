@@ -20,14 +20,21 @@ import {
 } from '../db/backtest.js';
 import { UniverseTimeline } from './universeTimeline.js';
 import { createOpenInterestSource, OI_MAX_AGE_MS } from './metricsStore.js';
+import { MinuteStore } from './minuteStore.js';
+import { lowerBoundByOpenTime, candlesBetween, lastClosedPrice } from './candles.js';
+
+export { lowerBoundByOpenTime, candlesBetween, lastClosedPrice };
 import { aggregateOutcomes } from './report.js';
 
 const TICK_MS = 15 * 60_000;
 
 /** Signal outcomes of the most recent run (in-memory; for tests and the report). */
 export let lastRunRejections = [];
-const WARMUP_1H_CANDLES = 30;
+const WARMUP_1H_CANDLES = 30;  // minimum history before a symbol is evaluated
 const WARMUP_15M_CANDLES = 30;
+// History loaded before a symbol joins the universe: a full live window
+// (the live scanner fetches KLINE_WINDOW candles for a new symbol).
+const LOAD_WARMUP_CANDLES = KLINE_WINDOW;
 
 /**
  * Approximate a 24h ticker (used by buildCandidate/filterCandidate) from the
@@ -52,29 +59,6 @@ function synthesizeTicker24h(klines1h) {
 function fundingRateAt(fundingHistory, tMs) {
   for (let i = fundingHistory.length - 1; i >= 0; i--) {
     if (fundingHistory[i].fundingTime <= tMs) return fundingHistory[i].fundingRate;
-  }
-  return null;
-}
-
-/** Index of the first candle with openTime >= tMs (candles sorted by openTime). */
-export function lowerBoundByOpenTime(candles, tMs) {
-  let lo = 0, hi = candles.length;
-  while (lo < hi) {
-    const mid = (lo + hi) >> 1;
-    if (candles[mid].openTime < tMs) lo = mid + 1; else hi = mid;
-  }
-  return lo;
-}
-
-/** 1m candles that opened in [fromMs, toMs). */
-export function candlesBetween(candles, fromMs, toMs) {
-  return candles.slice(lowerBoundByOpenTime(candles, fromMs), lowerBoundByOpenTime(candles, toMs));
-}
-
-/** Close of the latest 1m candle that closed before tMs (stand-in for mark price). */
-export function lastClosedPrice(candles, tMs) {
-  for (let i = lowerBoundByOpenTime(candles, tMs) - 1; i >= 0; i--) {
-    if (candles[i].closeTime < tMs) return candles[i].close;
   }
   return null;
 }
@@ -118,6 +102,10 @@ export async function runBacktest(opts) {
     dateToMs,
     startingBalance = 1000,
     cacheDir = DEFAULT_CACHE_DIR,
+    // Per-symbol candle source: REST by default; the dynamic universe passes the
+    // archive-backed hybrid (dynamicUniverse.js) so delisted symbols load too.
+    fetchRangeFor = () => fetchKlinesRange,
+    fetchFunding = fetchFundingRateHistory, // REST; delisted symbols get none (funding_extreme can't fire)
   } = opts;
   // Point-in-time universe (computeUniverseTimeline); default: every symbol, whole run
   const universe = opts.universe || UniverseTimeline.fixed(opts.symbols, dateFromMs, dateToMs, TICK_MS);
@@ -143,36 +131,37 @@ export async function runBacktest(opts) {
   console.log(`[backtest] run #${runId} started: "${label}" | ${symbols.join(',')} | strategy=${strategyId} | slippage=${costs.slippagePercent}% fee=${costs.feePercent}%/side`);
 
   try {
-    const warmupMs1h = WARMUP_1H_CANDLES * 60 * 60_000;
-    const warmupMs15m = WARMUP_15M_CANDLES * 15 * 60_000;
-    const exitDataEndMs = dateToMs + (Number(strat.max_hold_ms) || 0) + TICK_MS;
+    const warmupMs = { '1h': LOAD_WARMUP_CANDLES * INTERVAL_MS['1h'], '15m': LOAD_WARMUP_CANDLES * INTERVAL_MS['15m'] };
+    const minutes = new MinuteStore({ dir: cacheDir, fetchRangeFor });
 
+    // 1h/15m/funding for one membership interval [fromMs, untilMs) plus warmup —
+    // only symbols currently in the universe are held in memory.
     const data = {};
-    for (const symbol of symbols) {
-      console.log(`[backtest] fetching historical data for ${symbol} (1h, 15m, 1m, funding)...`);
+    const loadSymbol = async (symbol, fromMs, untilMs) => {
+      const toMs = Math.min(untilMs, dateToMs + TICK_MS) - 1;
       // Candles come from the local cache; only days not cached yet are downloaded
-      const cached = (interval, from, to) =>
-        getKlinesCached(symbol, interval, from, to, { dir: cacheDir, fetchRange: fetchKlinesRange }).then(r => {
+      const cached = (interval) =>
+        getKlinesCached(symbol, interval, fromMs - warmupMs[interval], toMs, { dir: cacheDir, fetchRange: fetchRangeFor(symbol) }).then(r => {
           if (r.downloadedDays) console.log(`[backtest]   ${symbol} ${interval}: ${r.cachedDays} day(s) cached, ${r.downloadedDays} downloaded`);
           return r.candles;
         });
-      const [klines1h, klines15m, klines1m, funding] = await Promise.all([
-        cached('1h', dateFromMs - warmupMs1h, dateToMs),
-        cached('15m', dateFromMs - warmupMs15m, dateToMs),
-        cached('1m', dateFromMs, Math.min(exitDataEndMs, Date.now())),
-        fetchFundingRateHistory(symbol, dateFromMs - warmupMs1h, dateToMs).catch(() => []),
+      const [klines1h, klines15m, funding] = await Promise.all([
+        cached('1h'), cached('15m'),
+        fetchFunding(symbol, fromMs - warmupMs['1h'], toMs).catch(() => []),
       ]);
+      const prev = data[symbol];
       data[symbol] = {
-        klines1h, klines15m, klines1m, funding, ptr1h: 0, ptr15m: 0,
+        klines1h, klines15m, funding, ptr1h: 0, ptr15m: 0, untilMs,
         // Every candle here came from Binance for the full range, so a hole with candles on
         // both sides is exchange-confirmed — the same condition live uses (confirmExchangeGaps).
         exchangeGaps: {
           '1h': new Set(findGaps(klines1h, INTERVAL_MS['1h']).map(gapKey)),
           '15m': new Set(findGaps(klines15m, INTERVAL_MS['15m']).map(gapKey)),
         },
-        loggedExchangeGaps: new Set(),
+        loggedExchangeGaps: prev?.loggedExchangeGaps || new Set(),
       };
-    }
+    };
+    const loggedExchangeGaps = new Map(); // kept across reloads so a hole is logged once per symbol
 
     const balance = {
       balanceUsdt: startingBalance,
@@ -203,11 +192,24 @@ export async function runBacktest(opts) {
       recordClose(balance, s.pnlUsdt, closedAtMs);
       closes.push({ closedAtMs, pnlUsdt: s.pnlUsdt });
       openPositions.splice(i, 1);
+      minutes.release(pos.symbol); // one position per symbol: its 1m days are no longer needed
     };
 
     for (let t = dateFromMs; t <= dateToMs; t += TICK_MS) {
-      // Advance per-symbol candle pointers to "now" (no lookahead past t)
+      // Universe membership at this 15m close: load symbols that just joined,
+      // drop the candles of those that left (open positions only need 1m).
       for (const symbol of symbols) {
+        const member = universe.isMember(symbol, t);
+        if (!member) {
+          if (data[symbol]) { loggedExchangeGaps.set(symbol, data[symbol].loggedExchangeGaps); delete data[symbol]; }
+          continue;
+        }
+        if (!data[symbol] || t >= data[symbol].untilMs) {
+          const [, until] = universe.closedIntervals(symbol).find(([a, b]) => a <= t && t < b);
+          if (!data[symbol]) data[symbol] = { loggedExchangeGaps: loggedExchangeGaps.get(symbol) };
+          await loadSymbol(symbol, t, until);
+        }
+        // Advance candle pointers to "now" (no lookahead past t)
         const d = data[symbol];
         while (d.ptr15m < d.klines15m.length && d.klines15m[d.ptr15m].closeTime <= t) d.ptr15m++;
         while (d.ptr1h < d.klines1h.length && d.klines1h[d.ptr1h].closeTime <= t) d.ptr1h++;
@@ -216,12 +218,11 @@ export async function runBacktest(opts) {
       // 1) Exits: same evaluation as the dry-run monitor, on 1m candles closed before t
       for (let i = openPositions.length - 1; i >= 0; i--) {
         const pos = openPositions[i];
-        const k1m = data[pos.symbol].klines1m;
-        const window = candlesBetween(k1m, Math.max(pos.openedAtMs, pos.lastCheckedMs + 1), t);
+        const window = await minutes.between(pos.symbol, Math.max(pos.openedAtMs, pos.lastCheckedMs + 1), t);
         const maxHoldMs = Number(strat.max_hold_ms) || 0;
         const holdEndMs = maxHoldMs > 0 ? pos.openedAtMs + maxHoldMs : Infinity;
         const { trigger, lastCheckedMs } = evaluateExit(pos, window, {
-          nowMs: t, maxHoldMs, maxHoldPrice: lastClosedPrice(k1m, Math.min(t, holdEndMs)),
+          nowMs: t, maxHoldMs, maxHoldPrice: await minutes.lastClosedPrice(pos.symbol, Math.min(t, holdEndMs)),
         });
         pos.lastCheckedMs = lastCheckedMs;
         if (trigger) await closePos(pos, i, trigger, trigger.candle?.closeTime ?? Math.min(t, holdEndMs));
@@ -349,22 +350,21 @@ export async function runBacktest(opts) {
       });
     }
 
-    // Positions still open at the end: keep evaluating on the 1m data fetched
-    // past dateTo (covers max hold), else close at the last available 1m close.
+    // Positions still open at the end: keep evaluating on 1m data past dateTo
+    // (covers max hold), else close at the last available 1m close.
+    const maxHoldMs = Number(strat.max_hold_ms) || 0;
+    const endMs = Math.min(dateToMs + maxHoldMs + TICK_MS, Date.now());
     for (let i = openPositions.length - 1; i >= 0; i--) {
       const pos = openPositions[i];
-      const k1m = data[pos.symbol].klines1m;
-      const endMs = (k1m[k1m.length - 1]?.closeTime ?? dateToMs) + 1;
-      const maxHoldMs = Number(strat.max_hold_ms) || 0;
       const holdEndMs = maxHoldMs > 0 ? pos.openedAtMs + maxHoldMs : Infinity;
-      const { trigger } = evaluateExit(pos, candlesBetween(k1m, Math.max(pos.openedAtMs, pos.lastCheckedMs + 1), endMs), {
-        nowMs: endMs, maxHoldMs, maxHoldPrice: lastClosedPrice(k1m, Math.min(endMs, holdEndMs)),
+      const { trigger } = evaluateExit(pos, await minutes.between(pos.symbol, Math.max(pos.openedAtMs, pos.lastCheckedMs + 1), endMs), {
+        nowMs: endMs, maxHoldMs, maxHoldPrice: await minutes.lastClosedPrice(pos.symbol, Math.min(endMs, holdEndMs)),
       });
       if (trigger) {
         await closePos(pos, i, trigger, trigger.candle?.closeTime ?? holdEndMs);
         continue;
       }
-      const lastPrice = lastClosedPrice(k1m, endMs);
+      const lastPrice = await minutes.lastClosedPrice(pos.symbol, endMs);
       if (lastPrice !== null) await closePos(pos, i, { exitReason: 'RUN_END', exitPriceRaw: lastPrice }, endMs);
     }
 
