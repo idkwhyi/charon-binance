@@ -20,6 +20,7 @@ import { realizedPnlSince } from './src/db/positions.js';
 import { shouldUseLlm } from './src/pipeline/candidateSelector.js';
 import { utcDayStartMs, dailyLossStatus } from './src/pipeline/riskControls.js';
 import { buildSettingsReport, formatSettingsReport, missingSchema, EXPECTED_SCHEMA } from './src/tools/settingsReport.js';
+import { isEntryPoint } from './src/entry.js';
 
 async function main() {
   const pool = new pg.Pool({
@@ -91,7 +92,8 @@ async function main() {
   await pool.end();
 }
 
-main().catch(err => {
+// Only when executed directly: importing this file (tests) must not touch the DB or network
+if (isEntryPoint(import.meta.url)) main().catch(err => {
   console.error(`[settings:show] failed: ${err.message}`);
   process.exit(1);
 });

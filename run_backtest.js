@@ -6,6 +6,7 @@ import { buildBacktestReport, printBacktestReport } from './src/backtest/report.
 import { prepareDynamicUniverse } from './src/backtest/dynamicUniverse.js';
 import { fetchExchangeInfoAll } from './src/enrichment/binance.js';
 import { WATCHLIST } from './src/config.js';
+import { isEntryPoint } from './src/entry.js';
 
 /**
  * CLI runner + reporter for the historical backtest engine.
@@ -104,7 +105,8 @@ async function main() {
   await closePgDb();
 }
 
-main().catch(err => {
+// Only when executed directly: importing this file (tests) must not touch the DB or network
+if (isEntryPoint(import.meta.url)) main().catch(err => {
   console.error('[run_backtest] fatal:', err);
   process.exit(1);
 });

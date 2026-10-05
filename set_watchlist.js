@@ -16,6 +16,7 @@ import axios from 'axios';
 import * as config from './src/config.js';
 import { fromJsonb } from './src/db/pg-connection.js';
 import { parseWatchlistArgs, untradableSymbols, listDiff, WATCHLIST_MAX } from './src/tools/watchlistInput.js';
+import { isEntryPoint } from './src/entry.js';
 
 const KEY = 'watchlist:symbols';
 const USAGE = `Usage: npm run watchlist:set -- SYM1,SYM2,... [--dry-run] [--no-verify]   (USDT-M symbols, max ${WATCHLIST_MAX})`;
@@ -98,7 +99,8 @@ async function main() {
   }
 }
 
-main().catch(err => {
+// Only when executed directly: importing this file (tests) must not touch the DB or network
+if (isEntryPoint(import.meta.url)) main().catch(err => {
   console.error(`[watchlist:set] failed: ${err.message}`);
   process.exit(1);
 });

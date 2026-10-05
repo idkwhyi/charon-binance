@@ -8,6 +8,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 import pg from 'pg';
+import { isEntryPoint } from '../src/entry.js';
 const { Pool } = pg;
 
 dotenv.config();
@@ -118,7 +119,8 @@ async function runMigration() {
 }
 
 // Run migration
-runMigration().catch(err => {
+// Only when executed directly: importing this file (tests) must not touch the DB or network
+if (isEntryPoint(import.meta.url)) runMigration().catch(err => {
   console.error('❌ Migration failed:', err);
   process.exit(1);
 });

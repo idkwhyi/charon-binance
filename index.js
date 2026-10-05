@@ -1,6 +1,5 @@
-import { realpathSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
 import { startCharon } from './src/app.js';
+import { isEntryPoint } from './src/entry.js';
 
 /** Boot the bot. Exported so the entry point can be imported (smoke test) without starting it. */
 export function main() {
@@ -11,6 +10,4 @@ export function main() {
 }
 
 // Run only when executed directly (npm start / node index.js), not when imported.
-// realpath.native: same file reached via a symlink or different path casing still counts.
-const isEntry = process.argv[1] && realpathSync.native(process.argv[1]) === realpathSync.native(fileURLToPath(import.meta.url));
-if (isEntry) main();
+if (isEntryPoint(import.meta.url)) main();

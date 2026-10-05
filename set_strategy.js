@@ -17,6 +17,7 @@ import * as config from './src/config.js';
 import { setPool, fromJsonb } from './src/db/pg-connection.js';
 import { strategyById } from './src/db/settings.js';
 import { parseStrategyArgs, diffPatch, formatHours, STRATEGY_KEYS } from './src/tools/strategyPatch.js';
+import { isEntryPoint } from './src/entry.js';
 
 const USAGE = `Usage: npm run strategy:set -- <strategy_id> key=value [key=value ...] [--dry-run] [--create]
 Keys:\n${Object.entries(STRATEGY_KEYS).map(([k, s]) => `  ${k.padEnd(24)} ${s.hint}`).join('\n')}`;
@@ -103,7 +104,8 @@ async function main() {
   }
 }
 
-main().catch(err => {
+// Only when executed directly: importing this file (tests) must not touch the DB or network
+if (isEntryPoint(import.meta.url)) main().catch(err => {
   console.error(`[strategy:set] failed: ${err.message}`);
   process.exit(1);
 });

@@ -7,6 +7,7 @@
 import { initDb, db } from './src/db/connection.js';
 import { initPgDb, pool } from './src/db/pg-connection.js';
 import { getVirtualBalanceStats, getBalanceSummary } from './src/db/virtualBalance.js';
+import { isEntryPoint } from './src/entry.js';
 
 const USE_POSTGRES = process.env.USE_POSTGRES === 'true';
 
@@ -164,4 +165,5 @@ async function viewPerformance() {
   }
 }
 
-viewPerformance();
+// Only when executed directly: importing this file (tests) must not touch the DB or network
+if (isEntryPoint(import.meta.url)) viewPerformance();
