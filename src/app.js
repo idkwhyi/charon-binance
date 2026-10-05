@@ -5,13 +5,13 @@ import { initBot, sendStartup, sendTelegram } from './telegram/send.js';
 import { warmupKlines, scanSignals, startWebSocket, setCycleHandler } from './signals/scanner.js';
 import { processScanCycle } from './pipeline/orchestrator.js';
 import { monitorPositions } from './execution/positions.js';
-import { startTopGainerRefresh } from './enrichment/topGainers.js';
+import { initUniverse } from './enrichment/topGainers.js';
 import { getWatchlist } from './db/watchlist.js';
 import { makeFailureTracker } from './utils.js';
 
 export async function startCharon() {
   validateConfig();
-  
+
   // Initialize PostgreSQL (required)
   await initPgDb();
   console.log('[db] using PostgreSQL');
@@ -23,8 +23,8 @@ export async function startCharon() {
   // Wire signal handler
   setCycleHandler(processScanCycle);
 
-  // Start top gainer auto-screener (updates watchlist every 5 min)
-  startTopGainerRefresh();
+  // Initialize universe (top gainer screener) — will update at 15m closes via orchestrator
+  await initUniverse();
 
   // Warmup kline cache
   await warmupKlines();

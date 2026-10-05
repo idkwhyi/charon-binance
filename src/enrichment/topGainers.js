@@ -1,103 +1,97 @@
 /**
  * Top Gainer Auto-Screener
  *
- * Fetches all USDM futures tickers from Binance every N minutes,
- * filters by volume and price change, then merges into the active watchlist.
+ * Fetches all USDM futures tickers from Binance and evaluates them against
+ * the universe selection rules (see src/universe/rules.js). Merges top movers
+ * into the active watchlist (pinned + env defaults always preserved).
  *
- * Criteria for inclusion:
- *   - Symbol ends with USDT (USDM perpetual)
- *   - 24h quote volume >= TOP_GAINER_MIN_VOLUME_USDT
- *   - |priceChangePct| >= 2% (moving, not dead)
- *   - Not a stablecoin pair (BUSDUSDT, USDCUSDT, etc.)
+ * Universe now updates at 15m close (same as signal cycles) via updateUniverse(),
+ * instead of a separate 5-minute timer.
  */
 
 import { fetchTicker24h } from './binance.js';
-import { mergeAutoSymbols, getWatchlist } from '../db/watchlist.js';
-import { TOP_GAINER_ENABLED, TOP_GAINER_COUNT, TOP_GAINER_MIN_VOLUME_USDT, TOP_GAINER_REFRESH_MS } from '../config.js';
+import { mergeAutoSymbols, getWatchlist, getPinnedSymbols, invalidateWatchlistCache } from '../db/watchlist.js';
+import { TOP_GAINER_ENABLED, TOP_GAINER_COUNT, TOP_GAINER_MIN_VOLUME_USDT, WATCHLIST } from '../config.js';
 import { sendTelegram } from '../telegram/send.js';
-import { fmtUsd } from '../format.js';
+import { universeCriteria, selectTopMovers } from '../universe/rules.js';
 
-const STABLECOIN_PAIRS = new Set(['BUSDUSDT', 'USDCUSDT', 'TUSDUSDT', 'USDTUSDT', 'DAIUSDT', 'FDUSDUSDT']);
-
-let refreshTimer = null;
-
-/**
- * Fetch and return top gainers + top losers from Binance futures.
- * @returns {Promise<string[]>} sorted symbol list
- */
-export async function fetchTopMovers() {
-  const tickers = await fetchTicker24h(); // all symbols
-  if (!Array.isArray(tickers)) return [];
-
-  const filtered = tickers
-    .filter(t => {
-      const sym = String(t.symbol || '');
-      const vol = Number(t.quoteVolume || 0);
-      const pct = Math.abs(Number(t.priceChangePercent || 0));
-      return (
-        sym.endsWith('USDT') &&
-        !STABLECOIN_PAIRS.has(sym) &&
-        vol >= TOP_GAINER_MIN_VOLUME_USDT &&
-        pct >= 2
-      );
-    })
-    .sort((a, b) => Math.abs(Number(b.priceChangePercent)) - Math.abs(Number(a.priceChangePercent)));
-
-  return filtered.slice(0, TOP_GAINER_COUNT).map(t => t.symbol);
-}
+let lastUpdateMs = 0;
+const MIN_UPDATE_INTERVAL_MS = 15 * 60 * 1000; // 15 minutes
 
 /**
- * Run one top-gainer refresh cycle:
- * 1. Fetch top movers
- * 2. Merge into watchlist
- * 3. Send Telegram summary
+ * Update the universe once if 15+ minutes have passed since last update.
+ * Called from orchestrator at each scan cycle (at least at 15m close, possibly more frequent).
+ * @param {boolean} force - bypass time check (used on startup)
+ * @returns {Promise<{updated: boolean, symbols: string[], added: string[], removed: string[]}>}
  */
-export async function refreshTopGainers(notify = true) {
-  if (!TOP_GAINER_ENABLED) return;
+export async function updateUniverse(force = false) {
+  if (!TOP_GAINER_ENABLED) return { updated: false, symbols: [], added: [], removed: [] };
+
+  const now = Date.now();
+  if (!force && now - lastUpdateMs < MIN_UPDATE_INTERVAL_MS) {
+    return { updated: false, symbols: [], added: [], removed: [] };
+  }
+
+  lastUpdateMs = now;
 
   try {
-    const movers = await fetchTopMovers();
-    if (!movers.length) return;
+    const tickers = await fetchTicker24h();
+    if (!Array.isArray(tickers) || tickers.length === 0) {
+      return { updated: false, symbols: [], added: [], removed: [] };
+    }
+
+    const criteria = universeCriteria({
+      minVolume24hUsdt: TOP_GAINER_MIN_VOLUME_USDT,
+      minAbsChangePercent: 2,
+      minOpenInterestUsdt: 0, // OI filter not used in live universe selection yet
+      excludeNonCrypto: true,
+    });
+
+    const movers = selectTopMovers(tickers, criteria)
+      .slice(0, TOP_GAINER_COUNT);
+
+    if (movers.length === 0) {
+      return { updated: false, symbols: [], added: [], removed: [] };
+    }
 
     const before = await getWatchlist();
-    const after  = await mergeAutoSymbols(movers, 50);
+    const pinned = await getPinnedSymbols();
+    const after = await mergeAutoSymbols(movers, 50);
+    invalidateWatchlistCache();
 
-    const added   = after.filter(s => !before.includes(s));
+    const added = after.filter(s => !before.includes(s));
     const removed = before.filter(s => !after.includes(s));
 
-    console.log(`[top-gainers] watchlist updated: ${after.length} symbols (+${added.length} -${removed.length})`);
+    if (added.length > 0 || removed.length > 0) {
+      console.log(`[universe] updated at ${new Date(now).toISOString()}: ${after.length} symbols (+${added.length} -${removed.length})`);
 
-    if (notify && (added.length > 0 || removed.length > 0)) {
       const lines = [
         `📡 <b>Watchlist Auto-Updated</b>`,
         `Total: <b>${after.length} symbols</b>`,
       ];
-      if (added.length)   lines.push(`➕ Added: <code>${added.join(', ')}</code>`);
-      if (removed.length) lines.push(`➖ Removed: <code>${removed.join(', ')}</code>`);
+      if (added.length) lines.push(`➕ Added: <code>${added.slice(0, 10).join(', ')}${added.length > 10 ? '...' : ''}</code>`);
+      if (removed.length) lines.push(`➖ Removed: <code>${removed.slice(0, 10).join(', ')}${removed.length > 10 ? '...' : ''}</code>`);
       await sendTelegram(lines.join('\n'));
     }
 
-    return after;
+    return { updated: true, symbols: after, added, removed };
   } catch (err) {
-    console.log(`[top-gainers] refresh failed: ${err.message}`);
+    console.log(`[universe] update failed: ${err.message}`);
+    return { updated: false, symbols: [], added: [], removed: [] };
   }
 }
 
 /**
- * Start periodic top-gainer refresh.
+ * Initialize universe on bot startup (force update, no interval).
  */
-export function startTopGainerRefresh() {
+export async function initUniverse() {
   if (!TOP_GAINER_ENABLED) {
-    console.log('[top-gainers] disabled');
+    console.log('[universe] disabled');
     return;
   }
 
-  // Run immediately on startup
-  refreshTopGainers(false).catch(() => {});
-
-  refreshTimer = setInterval(() => {
-    refreshTopGainers(true).catch(() => {});
-  }, TOP_GAINER_REFRESH_MS);
-
-  console.log(`[top-gainers] auto-refresh every ${TOP_GAINER_REFRESH_MS / 1000}s`);
+  console.log('[universe] initializing');
+  await updateUniverse(true).catch(err =>
+    console.log(`[universe] init failed: ${err.message}`)
+  );
 }
