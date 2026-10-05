@@ -323,3 +323,47 @@ test('STABLECOIN_PAIRS: has all stablecoins', () => {
   assert(STABLECOIN_PAIRS.has('DAIUSDT'));
   assert(STABLECOIN_PAIRS.has('FDUSDUSDT'));
 });
+
+test('non-crypto filter: exclude TSLAUSDT (EQUITY/TradFi)', () => {
+  const criteria = universeCriteria({ excludeNonCrypto: true });
+  const ticker = {
+    symbol: 'TSLAUSDT',
+    quoteVolume: 100_000_000,
+    priceChangePercent: 5,
+  };
+  const info = { underlyingType: 'EQUITY', underlyingSubType: 'TradFi' };
+  assert.strictEqual(passesCriteria(ticker, criteria, info), false);
+});
+
+test('non-crypto filter: exclude MSTRUSDT (EQUITY/TradFi)', () => {
+  const criteria = universeCriteria({ excludeNonCrypto: true });
+  const ticker = {
+    symbol: 'MSTRUSDT',
+    quoteVolume: 100_000_000,
+    priceChangePercent: 5,
+  };
+  const info = { underlyingType: 'EQUITY', underlyingSubType: 'TradFi' };
+  assert.strictEqual(passesCriteria(ticker, criteria, info), false);
+});
+
+test('non-crypto filter: exclude SOXSUSDT (EQUITY/TradFi)', () => {
+  const criteria = universeCriteria({ excludeNonCrypto: true });
+  const ticker = {
+    symbol: 'SOXSUSDT',
+    quoteVolume: 100_000_000,
+    priceChangePercent: 5,
+  };
+  const info = { underlyingType: 'EQUITY', underlyingSubType: 'TradFi' };
+  assert.strictEqual(passesCriteria(ticker, criteria, info), false);
+});
+
+test('non-crypto filter: include crypto despite non-COIN underlyingType if excludeNonCrypto=false', () => {
+  const criteria = universeCriteria({ excludeNonCrypto: false });
+  const ticker = {
+    symbol: 'MSTRUSDT',
+    quoteVolume: 100_000_000,
+    priceChangePercent: 5,
+  };
+  const info = { underlyingType: 'EQUITY', underlyingSubType: 'TradFi' };
+  assert.strictEqual(passesCriteria(ticker, criteria, info), true);
+});

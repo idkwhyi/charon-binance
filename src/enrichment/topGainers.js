@@ -15,24 +15,43 @@ import { TOP_GAINER_ENABLED, TOP_GAINER_COUNT, TOP_GAINER_MIN_VOLUME_USDT, WATCH
 import { sendTelegram } from '../telegram/send.js';
 import { universeCriteria, selectTopMovers } from '../universe/rules.js';
 
-let lastUpdateMs = 0;
-const MIN_UPDATE_INTERVAL_MS = 15 * 60 * 1000; // 15 minutes
+let last15mCloseTimeMs = 0;
 
 /**
- * Update the universe once if 15+ minutes have passed since last update.
- * Called from orchestrator at each scan cycle (at least at 15m close, possibly more frequent).
- * @param {boolean} force - bypass time check (used on startup)
+ * Calculate the last 15m candle close time (aligned to :00/:15/:30/:45 UTC).
+ * E.g., if now is 14:37, the last closed 15m candle closed at 14:30.
+ * @param {number} nowMs - current time in ms
+ * @returns {number} last close time in ms
+ */
+function last15mCandle(nowMs) {
+  const t = new Date(nowMs);
+  const minutes = t.getUTCMinutes();
+  const aligned = Math.floor(minutes / 15) * 15; // this is the last 15m boundary
+  const closeT = new Date(t);
+  closeT.setUTCMinutes(aligned);
+  closeT.setUTCSeconds(0);
+  closeT.setUTCMilliseconds(0);
+  return closeT.getTime();
+}
+
+/**
+ * Update the universe exactly once per 15m candle close (:00/:15/:30/:45 UTC).
+ * Called from orchestrator at each scan cycle (every 30s). Only updates if a new
+ * 15m candle has closed since the last update, and before signal evaluation.
+ * @param {boolean} force - bypass candle check (used on startup)
  * @returns {Promise<{updated: boolean, symbols: string[], added: string[], removed: string[]}>}
  */
 export async function updateUniverse(force = false) {
   if (!TOP_GAINER_ENABLED) return { updated: false, symbols: [], added: [], removed: [] };
 
-  const now = Date.now();
-  if (!force && now - lastUpdateMs < MIN_UPDATE_INTERVAL_MS) {
+  const nowMs = Date.now();
+  const current15mMs = last15mCandle(nowMs);
+
+  if (!force && current15mMs <= last15mCloseTimeMs) {
     return { updated: false, symbols: [], added: [], removed: [] };
   }
 
-  lastUpdateMs = now;
+  last15mCloseTimeMs = current15mMs;
 
   try {
     const tickers = await fetchTicker24h();
